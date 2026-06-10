@@ -91,12 +91,35 @@ body,
   flex-shrink: 0;
 }
 
+.main.dragging {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.main.dragging .editor-pane,
+.main.dragging .diagram-svg {
+  pointer-events: none;
+}
+
+.splitter {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: #313244;
+  transition: background 0.15s;
+}
+
+.splitter:hover,
+.main.dragging .splitter {
+  background: #89b4fa88;
+}
+
 .sidebar {
   width: 290px;
-  min-width: 200px;
+  min-width: 160px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #313244;
   background: #16161e;
 }
 
@@ -107,11 +130,10 @@ body,
 }
 
 .editor-section {
-  flex: 1.1;
   min-width: 280px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #313244;
 }
 
 .editor-pane {
@@ -125,8 +147,8 @@ body,
 }
 
 .diagram-section {
-  flex: 1.3;
-  min-width: 300px;
+  flex: 1;
+  min-width: 240px;
   display: flex;
   flex-direction: column;
 }

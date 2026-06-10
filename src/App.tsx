@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DiagramView } from "./components/DiagramView";
 import { EditorPane, EditorSelection } from "./components/EditorPane";
 import { OutlineTree } from "./components/OutlineTree";
@@ -57,6 +57,46 @@ export default function App() {
   const [diagramRootName, setDiagramRootName] = useState<string>("");
   const selectSeq = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ---- resizable panes ----
+  const DEFAULT_SIDEBAR_W = 290;
+  const defaultEditorW = () => Math.max(420, Math.round(window.innerWidth * 0.34));
+  const [sidebarW, setSidebarW] = useState(DEFAULT_SIDEBAR_W);
+  const [editorW, setEditorW] = useState(defaultEditorW);
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<{ which: 1 | 2; startX: number; startW: number } | null>(null);
+
+  const startDrag = (which: 1 | 2) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { which, startX: e.clientX, startW: which === 1 ? sidebarW : editorW };
+    setDragging(true);
+  };
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const dx = e.clientX - d.startX;
+      if (d.which === 1) {
+        const max = window.innerWidth - 700;
+        setSidebarW(Math.min(Math.max(160, d.startW + dx), Math.max(160, max)));
+      } else {
+        const max = window.innerWidth - sidebarW - 340;
+        setEditorW(Math.min(Math.max(280, d.startW + dx), Math.max(280, max)));
+      }
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      setDragging(false);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [dragging, sidebarW]);
 
   const parsed = useMemo(() => parseSysML(source), [source]);
 
@@ -172,8 +212,8 @@ export default function App() {
         />
       </header>
 
-      <div className="main">
-        <aside className="sidebar">
+      <div className={"main" + (dragging ? " dragging" : "")}>
+        <aside className="sidebar" style={{ width: sidebarW }}>
           <div className="panel-title">モデルツリー</div>
           <div className="sidebar-tree">
             <OutlineTree root={parsed.root} selected={selected} onSelect={handleSelect} />
@@ -202,7 +242,14 @@ export default function App() {
           )}
         </aside>
 
-        <section className="editor-section">
+        <div
+          className="splitter"
+          onMouseDown={startDrag(1)}
+          onDoubleClick={() => setSidebarW(DEFAULT_SIDEBAR_W)}
+          title="ドラッグでリサイズ / ダブルクリックでリセット"
+        />
+
+        <section className="editor-section" style={{ width: editorW }}>
           <div className="panel-title">
             テキスト (Authoring)
           </div>
@@ -215,6 +262,13 @@ export default function App() {
             onCursor={handleCursor}
           />
         </section>
+
+        <div
+          className="splitter"
+          onMouseDown={startDrag(2)}
+          onDoubleClick={() => setEditorW(defaultEditorW())}
+          title="ドラッグでリサイズ / ダブルクリックでリセット"
+        />
 
         <section className="diagram-section">
           <div className="panel-title diagram-title">
