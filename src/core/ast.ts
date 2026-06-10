@@ -78,6 +78,14 @@ export interface ConnectionEnd {
   path: string;
 }
 
+/** A reference to another element, with its source range (for diagnostics). */
+export interface Ref {
+  kind: "type" | "specialize" | "redefine" | "end" | "target" | "import" | "metadata";
+  name: string;
+  start: number;
+  end: number;
+}
+
 export interface SysMLElement {
   kind: ElementKind;
   /** Declared name (unquoted). */
@@ -106,6 +114,8 @@ export interface SysMLElement {
   target?: string;
   /** For transitions: trigger / guard / effect text. */
   transition?: { source?: string; target?: string; trigger?: string; guard?: string };
+  /** References to other elements with source ranges (for validation). */
+  refs: Ref[];
   children: SysMLElement[];
   parent?: SysMLElement;
   /** id of the workspace file this element belongs to */
@@ -136,6 +146,7 @@ export function createElement(kind: ElementKind, start = 0): SysMLElement {
     specializes: [],
     redefines: [],
     modifiers: [],
+    refs: [],
     children: [],
     start,
     end: start,

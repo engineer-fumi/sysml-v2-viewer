@@ -1,6 +1,7 @@
 package VehicleRequirements {
     doc /* 車両要求。構成・定義を別ファイルから import して参照する。 */
 
+    import ScalarValues::*;
     import VehicleDefinitions::*;
     import VehicleConfiguration::*;
 

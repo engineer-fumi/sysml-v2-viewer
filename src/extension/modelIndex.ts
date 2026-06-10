@@ -1,6 +1,9 @@
 import * as vscode from "vscode";
 import { ParseResult, SysMLElement, createElement, walk } from "../core/ast";
 import { parseSysML } from "../core/parser";
+import { STDLIB_FILES } from "../core/stdlib";
+
+export const BUILTIN_SCHEME = "sysml-builtin";
 
 export interface IndexedFile {
   uri: vscode.Uri;
@@ -9,6 +12,8 @@ export interface IndexedFile {
   fileId: number;
   source: string;
   result: ParseResult;
+  /** part of the bundled standard library (not user code) */
+  builtin: boolean;
 }
 
 /**
@@ -27,6 +32,12 @@ export class ModelIndex implements vscode.Disposable {
   readonly onDidChangeModel = this.changeEmitter.event;
 
   async initialize(): Promise<void> {
+    // bundled standard library (ScalarValues, ISQ, SI, base defs ...)
+    for (const lib of STDLIB_FILES) {
+      const uri = vscode.Uri.parse(`${BUILTIN_SCHEME}:/${lib.name}`);
+      this.setEntry(uri, lib.source, /*builtin*/ true);
+    }
+
     const uris = await vscode.workspace.findFiles(
       "**/*.{sysml,kerml}",
       "**/{node_modules,dist,build,.git}/**"
@@ -78,6 +89,7 @@ export class ModelIndex implements vscode.Disposable {
   }
 
   private isSysML(doc: vscode.TextDocument): boolean {
+    if (doc.uri.scheme === BUILTIN_SCHEME) return false; // read-only library
     return doc.languageId === "sysml" || /\.(sysml|kerml)$/i.test(doc.uri.path);
   }
 
@@ -100,16 +112,17 @@ export class ModelIndex implements vscode.Disposable {
     return this.setEntry(doc.uri, doc.getText());
   }
 
-  private setEntry(uri: vscode.Uri, source: string): IndexedFile {
+  private setEntry(uri: vscode.Uri, source: string, builtin = false): IndexedFile {
     const key = uri.toString();
     const prev = this.files.get(key);
     if (prev && prev.source === source) return prev;
     const entry: IndexedFile = {
       uri,
-      name: this.displayName(uri),
+      name: builtin ? uri.path.replace(/^\//, "") : this.displayName(uri),
       fileId: prev?.fileId ?? this.nextFileId++,
       source,
       result: parseSysML(source),
+      builtin,
     };
     // tag elements with the file id for cross-file navigation
     walk(entry.result.root, (el) => {
@@ -135,14 +148,16 @@ export class ModelIndex implements vscode.Disposable {
     return undefined;
   }
 
-  all(): IndexedFile[] {
-    return [...this.files.values()].sort((a, b) => a.name.localeCompare(b.name));
+  all(includeBuiltin = false): IndexedFile[] {
+    return [...this.files.values()]
+      .filter((f) => includeBuiltin || !f.builtin)
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /** Combined model: a synthetic root with one `file` node per indexed file. */
-  combinedRoot(): SysMLElement {
+  combinedRoot(includeBuiltin = false): SysMLElement {
     const root = createElement("namespace");
-    for (const f of this.all()) {
+    for (const f of this.all(includeBuiltin)) {
       const fileEl = f.result.root;
       fileEl.kind = "file";
       fileEl.name = f.name;

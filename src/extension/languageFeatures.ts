@@ -1,11 +1,44 @@
 import * as vscode from "vscode";
 import { SysMLElement, elementLabel, qualifiedName } from "../core/ast";
 import { KEYWORDS } from "../core/lexer";
+import { Resolver } from "../core/resolve";
+import { SemanticRule, validateFile } from "../core/validate";
 import { ModelIndex, elementAt } from "./modelIndex";
 
 const SELECTOR: vscode.DocumentSelector = { language: "sysml" };
 
-// ---- diagnostics -------------------------------------------------------
+// ---- diagnostics (syntax + semantic validation) --------------------------
+
+/** offset -> Position without opening a TextDocument */
+class LineMap {
+  private starts: number[] = [0];
+  constructor(source: string) {
+    for (let i = 0; i < source.length; i++) {
+      if (source[i] === "\n") this.starts.push(i + 1);
+    }
+  }
+  positionAt(offset: number): vscode.Position {
+    let lo = 0;
+    let hi = this.starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (this.starts[mid] <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return new vscode.Position(lo, offset - this.starts[lo]);
+  }
+}
+
+type SeveritySetting = "error" | "warning" | "information" | "off";
+
+function severityOf(setting: SeveritySetting): vscode.DiagnosticSeverity | undefined {
+  switch (setting) {
+    case "error": return vscode.DiagnosticSeverity.Error;
+    case "warning": return vscode.DiagnosticSeverity.Warning;
+    case "information": return vscode.DiagnosticSeverity.Information;
+    default: return undefined;
+  }
+}
 
 export function registerDiagnostics(
   context: vscode.ExtensionContext,
@@ -14,28 +47,61 @@ export function registerDiagnostics(
   const collection = vscode.languages.createDiagnosticCollection("sysml");
   context.subscriptions.push(collection);
 
-  const refresh = (doc: vscode.TextDocument) => {
-    if (doc.languageId !== "sysml") return;
-    const entry = index.get(doc.uri) ?? index.indexDocument(doc);
-    const diagnostics = entry.result.errors.map((e) => {
-      const range = new vscode.Range(doc.positionAt(e.start), doc.positionAt(e.end));
-      const d = new vscode.Diagnostic(range, e.message, vscode.DiagnosticSeverity.Error);
-      d.source = "sysml";
-      return d;
-    });
-    collection.set(doc.uri, diagnostics);
+  const runAll = () => {
+    const cfg = vscode.workspace.getConfiguration("sysml.validation");
+    const sevUnresolved = severityOf(cfg.get<SeveritySetting>("unresolvedReferences", "warning"));
+    const sevDuplicate = severityOf(cfg.get<SeveritySetting>("duplicateNames", "error"));
+    const sevConformance = severityOf(cfg.get<SeveritySetting>("typeConformance", "warning"));
+    const sevByRule: Record<SemanticRule, vscode.DiagnosticSeverity | undefined> = {
+      unresolved: sevUnresolved,
+      duplicate: sevDuplicate,
+      conformance: sevConformance,
+    };
+
+    const resolver = new Resolver(index.combinedRoot(/*includeBuiltin*/ true));
+
+    for (const file of index.all(false)) {
+      const lines = new LineMap(file.source);
+      const diagnostics: vscode.Diagnostic[] = [];
+
+      for (const e of file.result.errors) {
+        const d = new vscode.Diagnostic(
+          new vscode.Range(lines.positionAt(e.start), lines.positionAt(e.end)),
+          e.message,
+          vscode.DiagnosticSeverity.Error
+        );
+        d.source = "sysml";
+        diagnostics.push(d);
+      }
+
+      const semantic = validateFile(file.result.root, resolver, {
+        unresolved: !!sevUnresolved,
+        duplicates: !!sevDuplicate,
+        conformance: !!sevConformance,
+      });
+      for (const s of semantic) {
+        const severity = sevByRule[s.rule];
+        if (severity === undefined) continue;
+        const d = new vscode.Diagnostic(
+          new vscode.Range(lines.positionAt(s.start), lines.positionAt(s.end)),
+          s.message,
+          severity
+        );
+        d.source = "sysml";
+        d.code = s.rule;
+        diagnostics.push(d);
+      }
+
+      collection.set(file.uri, diagnostics);
+    }
   };
 
-  for (const doc of vscode.workspace.textDocuments) refresh(doc);
-
-  let timer: NodeJS.Timeout | undefined;
+  runAll();
   context.subscriptions.push(
-    vscode.workspace.onDidOpenTextDocument(refresh),
-    vscode.workspace.onDidChangeTextDocument((e) => {
-      clearTimeout(timer);
-      timer = setTimeout(() => refresh(e.document), 300);
-    }),
-    vscode.workspace.onDidCloseTextDocument((doc) => collection.delete(doc.uri))
+    index.onDidChangeModel(runAll),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("sysml.validation")) runAll();
+    })
   );
 }
 

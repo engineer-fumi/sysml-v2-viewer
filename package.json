@@ -69,6 +69,29 @@
           "command": "sysml.openDiagram"
         }
       ]
+    },
+    "configuration": {
+      "title": "SysML v2 Viewer",
+      "properties": {
+        "sysml.validation.unresolvedReferences": {
+          "type": "string",
+          "enum": ["error", "warning", "information", "off"],
+          "default": "warning",
+          "description": "未解決の参照 (型・特化・接続先など) の診断レベル"
+        },
+        "sysml.validation.duplicateNames": {
+          "type": "string",
+          "enum": ["error", "warning", "information", "off"],
+          "default": "error",
+          "description": "同一スコープ内の重複名の診断レベル"
+        },
+        "sysml.validation.typeConformance": {
+          "type": "string",
+          "enum": ["error", "warning", "information", "off"],
+          "default": "warning",
+          "description": "型付け・特化の種類整合 (part は part def で型付け 等) の診断レベル"
+        }
+      }
     }
   },
   "scripts": {
