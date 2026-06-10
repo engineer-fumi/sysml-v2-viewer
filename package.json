@@ -2,7 +2,7 @@
   "name": "sysml-v2-viewer",
   "displayName": "SysML v2 Viewer",
   "description": "SysML v2 (.sysml / .kerml) のオーサリングと可視化: シンタックスハイライト・補完・診断・アウトライン・定義ジャンプ・インターコネクション図",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "engineer-fumi",
   "license": "MIT",
   "repository": {

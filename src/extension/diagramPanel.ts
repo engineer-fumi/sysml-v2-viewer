@@ -47,10 +47,16 @@ interface DeleteMessage {
   label: string;
 }
 
+interface EdgeLayoutInfo {
+  style?: string;
+  points?: { x: number; y: number }[];
+}
+
 interface SaveLayoutMessage {
   type: "saveLayout";
   rootKey: string;
   offsets: Record<string, { dx: number; dy: number }>;
+  edges?: Record<string, EdgeLayoutInfo>;
 }
 
 type FromWebview =
@@ -64,7 +70,12 @@ type FromWebview =
 
 const LAYOUT_FILE = ".sysml-layout.json";
 
-type Layouts = Record<string, Record<string, { dx: number; dy: number }>>;
+interface RootLayout {
+  offsets: Record<string, { dx: number; dy: number }>;
+  edges: Record<string, EdgeLayoutInfo>;
+}
+
+type Layouts = Record<string, RootLayout>;
 
 export class DiagramPanel {
   static current: DiagramPanel | undefined;
@@ -182,7 +193,21 @@ export class DiagramPanel {
     if (!uri) return {};
     try {
       const bytes = await vscode.workspace.fs.readFile(uri);
-      return JSON.parse(Buffer.from(bytes).toString("utf8")) as Layouts;
+      const raw = JSON.parse(Buffer.from(bytes).toString("utf8")) as Record<string, unknown>;
+      // migrate the pre-0.5 format that stored the offsets map directly
+      const out: Layouts = {};
+      for (const [rootKey, value] of Object.entries(raw)) {
+        if (value && typeof value === "object" && ("offsets" in value || "edges" in value)) {
+          const v = value as Partial<RootLayout>;
+          out[rootKey] = { offsets: v.offsets ?? {}, edges: v.edges ?? {} };
+        } else {
+          out[rootKey] = {
+            offsets: (value as Record<string, { dx: number; dy: number }>) ?? {},
+            edges: {},
+          };
+        }
+      }
+      return out;
     } catch {
       return {};
     }
@@ -192,15 +217,29 @@ export class DiagramPanel {
     const uri = this.layoutUri();
     if (!uri) return;
     const layouts = await this.loadLayouts();
-    // drop zero offsets to keep the file small
-    const cleaned: Record<string, { dx: number; dy: number }> = {};
+
+    // drop zero offsets / empty edge entries to keep the file small
+    const offsets: Record<string, { dx: number; dy: number }> = {};
     for (const [k, v] of Object.entries(msg.offsets)) {
       if (Math.abs(v.dx) > 0.5 || Math.abs(v.dy) > 0.5) {
-        cleaned[k] = { dx: Math.round(v.dx), dy: Math.round(v.dy) };
+        offsets[k] = { dx: Math.round(v.dx), dy: Math.round(v.dy) };
       }
     }
-    if (Object.keys(cleaned).length) layouts[msg.rootKey] = cleaned;
-    else delete layouts[msg.rootKey];
+    const edges: Record<string, EdgeLayoutInfo> = {};
+    for (const [k, v] of Object.entries(msg.edges ?? {})) {
+      const points = (v.points ?? [])
+        .map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
+      const entry: EdgeLayoutInfo = {};
+      if (v.style && v.style !== "straight") entry.style = v.style;
+      if (points.length) entry.points = points;
+      if (entry.style || entry.points) edges[k] = entry;
+    }
+
+    if (Object.keys(offsets).length || Object.keys(edges).length) {
+      layouts[msg.rootKey] = { offsets, edges };
+    } else {
+      delete layouts[msg.rootKey];
+    }
     await vscode.workspace.fs.writeFile(
       uri,
       Buffer.from(JSON.stringify(layouts, null, 2) + "\n", "utf8")

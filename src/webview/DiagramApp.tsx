@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SysMLElement, createElement, qualifiedName, walk } from "../core/ast";
-import { LayoutOffsets } from "../core/layout";
+import { EdgeLayout, EdgeStyle, LayoutOffsets, Point } from "../core/layout";
 import { SerializedModelFile, restoreParents } from "../core/serialize";
 import { DiagramView, EditMode } from "./DiagramView";
 
@@ -12,12 +12,42 @@ declare function acquireVsCodeApi(): {
 
 const vscode = acquireVsCodeApi();
 
-type Layouts = Record<string, LayoutOffsets>;
+/** persisted drawing info for one diagram root */
+interface RootLayout {
+  offsets: LayoutOffsets;
+  edges: Record<string, EdgeLayout>;
+}
+
+type Layouts = Record<string, RootLayout>;
+
+/** older files stored the offsets map directly */
+function normalizeLayouts(raw: Record<string, unknown> | undefined): Layouts {
+  const out: Layouts = {};
+  for (const [rootKey, value] of Object.entries(raw ?? {})) {
+    if (value && typeof value === "object" && ("offsets" in value || "edges" in value)) {
+      const v = value as Partial<RootLayout>;
+      out[rootKey] = { offsets: v.offsets ?? {}, edges: v.edges ?? {} };
+    } else {
+      out[rootKey] = { offsets: (value as LayoutOffsets) ?? {}, edges: {} };
+    }
+  }
+  return out;
+}
+
+const EDGE_KINDS = new Set([
+  "connect", "bind", "flow", "transition", "connection", "interface", "allocation",
+]);
+
+const EDGE_STYLES: { value: EdgeStyle; label: string }[] = [
+  { value: "straight", label: "直線" },
+  { value: "ortho", label: "折れ線" },
+  { value: "curve", label: "曲線" },
+];
 
 interface ModelMessage {
   type: "model";
   files: SerializedModelFile[];
-  layouts?: Layouts;
+  layouts?: Record<string, unknown>;
 }
 
 interface HighlightMessage {
@@ -128,14 +158,28 @@ export function DiagramApp() {
     return combinedRoot;
   }, [combinedRoot, rootCandidates, rootKey, keyOf]);
 
-  const offsets = layouts[rootKey] ?? {};
+  const offsets = layouts[rootKey]?.offsets ?? {};
+  const edgeLayouts = layouts[rootKey]?.edges ?? {};
+
+  /** stable edge key: scope + kind + endpoints (edges are usually unnamed) */
+  const edgeKeyOf = useCallback(
+    (el: SysMLElement) => {
+      const file = el.fileId !== undefined ? fileNameById.get(el.fileId) ?? el.fileId : "";
+      const scope = el.parent ? qualifiedName(el.parent) : "";
+      const desc =
+        el.ends?.map((e) => e.path).join("->") ??
+        (el.transition ? `${el.transition.source ?? ""}->${el.transition.target ?? ""}` : el.name ?? "");
+      return `${file}#${scope}|${el.kind}|${desc}`;
+    },
+    [fileNameById]
+  );
 
   useEffect(() => {
     const onMessage = (e: MessageEvent<FromExtension>) => {
       const msg = e.data;
       if (msg.type === "model") {
         setFiles(msg.files);
-        if (msg.layouts) setLayouts(msg.layouts);
+        if (msg.layouts) setLayouts(normalizeLayouts(msg.layouts));
       } else if (msg.type === "highlight") {
         setPendingHighlight({ fileId: msg.fileId, offset: msg.offset });
       }
@@ -291,17 +335,48 @@ export function DiagramApp() {
     setMode("select");
   };
 
+  const saveRootLayout = (next: RootLayout) => {
+    setLayouts((prev) => ({ ...prev, [rootKey]: next }));
+    vscode.postMessage({ type: "saveLayout", rootKey, offsets: next.offsets, edges: next.edges });
+  };
+
   const handleMoveBox = (key: string, ddx: number, ddy: number) => {
     const cur = offsets[key] ?? { dx: 0, dy: 0 };
-    const next = { ...offsets, [key]: { dx: cur.dx + ddx, dy: cur.dy + ddy } };
-    setLayouts((prev) => ({ ...prev, [rootKey]: next }));
-    vscode.postMessage({ type: "saveLayout", rootKey, offsets: next });
+    saveRootLayout({
+      offsets: { ...offsets, [key]: { dx: cur.dx + ddx, dy: cur.dy + ddy } },
+      edges: edgeLayouts,
+    });
+  };
+
+  const handleEdgeEdit = (key: string, points: Point[]) => {
+    saveRootLayout({
+      offsets,
+      edges: { ...edgeLayouts, [key]: { ...edgeLayouts[key], points } },
+    });
+  };
+
+  const setEdgeStyle = (key: string, style: EdgeStyle) => {
+    saveRootLayout({
+      offsets,
+      edges: { ...edgeLayouts, [key]: { ...edgeLayouts[key], style } },
+    });
+  };
+
+  const clearEdgePoints = (key: string) => {
+    saveRootLayout({
+      offsets,
+      edges: { ...edgeLayouts, [key]: { ...edgeLayouts[key], points: [] } },
+    });
   };
 
   const resetLayout = () => {
-    setLayouts((prev) => ({ ...prev, [rootKey]: {} }));
-    vscode.postMessage({ type: "saveLayout", rootKey, offsets: {} });
+    saveRootLayout({ offsets: {}, edges: {} });
   };
+
+  const selectedEdgeKey =
+    selected && EDGE_KINDS.has(selected.kind) && selected.fileId !== undefined
+      ? edgeKeyOf(selected)
+      : undefined;
 
   const modeButton = (m: EditMode, label: string, title: string) => (
     <button
@@ -361,6 +436,28 @@ export function DiagramApp() {
         <button className="mode-btn" onClick={resetLayout} title="この図の手動配置をリセット">
           ⟲ 配置リセット
         </button>
+        {selectedEdgeKey && (
+          <span className="edge-tools">
+            <span className="edge-tools-label">線:</span>
+            <select
+              className="add-select"
+              value={edgeLayouts[selectedEdgeKey]?.style ?? "straight"}
+              onChange={(e) => setEdgeStyle(selectedEdgeKey, e.target.value as EdgeStyle)}
+              title="選択中の線のスタイル"
+            >
+              {EDGE_STYLES.map((s) => (
+                <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </select>
+            <button
+              className="mode-btn"
+              onClick={() => clearEdgePoints(selectedEdgeKey)}
+              title="選択中の線の経由点をすべて削除"
+            >
+              経由点クリア
+            </button>
+          </span>
+        )}
         <span className="mode-hint">
           {mode === "connect"
             ? connectSource
@@ -368,7 +465,9 @@ export function DiagramApp() {
               : "接続元をクリック"
             : mode.startsWith("add:")
               ? `${mode.slice(4)} の追加先をクリック — コンテナ or 空白 (図ルートへ) / Esc で取消`
-              : "ドラッグで配置変更 / ダブルクリックでリネーム / Delete で削除"}
+              : selectedEdgeKey
+                ? "線上の◌をドラッグで経由点追加 / ●をドラッグで移動・ダブルクリックで削除"
+                : "ドラッグで配置変更 / ダブルクリックでリネーム / Delete で削除"}
         </span>
       </div>
       <DiagramView
@@ -377,10 +476,13 @@ export function DiagramApp() {
         marked={connectSource}
         mode={mode}
         offsets={offsets}
+        edges={edgeLayouts}
         keyOf={keyOf}
+        edgeKeyOf={edgeKeyOf}
         onElementClick={handleElementClick}
         onElementDoubleClick={handleElementDoubleClick}
         onMoveBox={handleMoveBox}
+        onEdgeEdit={handleEdgeEdit}
         onBackgroundClick={handleBackgroundClick}
       />
     </div>

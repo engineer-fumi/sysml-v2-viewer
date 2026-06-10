@@ -61,6 +61,19 @@ export interface DiagramNode {
   portBoxes?: DiagramNode[];
 }
 
+export type EdgeStyle = "straight" | "ortho" | "curve";
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/** persisted per-edge drawing info (waypoints are relative to the base) */
+export interface EdgeLayout {
+  style?: EdgeStyle;
+  points?: Point[];
+}
+
 export interface DiagramEdge {
   el: SysMLElement;
   kind: "connect" | "flow" | "bind" | "transition" | "interface" | "connection" | "allocation";
@@ -68,6 +81,13 @@ export interface DiagramEdge {
   y1: number;
   x2: number;
   y2: number;
+  /** intermediate waypoints in absolute diagram coordinates */
+  points: Point[];
+  style: EdgeStyle;
+  /** persistence key + reference point for relative waypoints */
+  key?: string;
+  baseX: number;
+  baseY: number;
   label?: string;
   arrow: boolean;
   dashed: boolean;
@@ -339,19 +359,21 @@ function resolvePath(scope: SysMLElement, path: string): SysMLElement | undefine
   return cur;
 }
 
-function rectAnchor(a: DiagramNode, b: DiagramNode): { x: number; y: number } {
-  // anchor on the border of a towards centre of b
+/** anchor on the border of a towards an arbitrary target point */
+function rectAnchorPt(a: DiagramNode, target: { x: number; y: number }): { x: number; y: number } {
   const acx = a.x + a.w / 2;
   const acy = a.y + a.h / 2;
-  const bcx = b.x + b.w / 2;
-  const bcy = b.y + b.h / 2;
-  const dx = bcx - acx;
-  const dy = bcy - acy;
+  const dx = target.x - acx;
+  const dy = target.y - acy;
   if (dx === 0 && dy === 0) return { x: acx, y: acy };
   const sx = dx !== 0 ? (a.w / 2) / Math.abs(dx) : Infinity;
   const sy = dy !== 0 ? (a.h / 2) / Math.abs(dy) : Infinity;
   const t = Math.min(sx, sy, 1);
   return { x: acx + dx * t, y: acy + dy * t };
+}
+
+function centerOf(n: DiagramNode): Point {
+  return { x: n.x + n.w / 2, y: n.y + n.h / 2 };
 }
 
 // ---- main entry --------------------------------------------------------
@@ -361,9 +383,12 @@ export interface LayoutOffsets {
 }
 
 export interface LayoutOptions {
-  /** manual position offsets for top-level boxes, keyed by keyOf(el) */
+  /** manual position offsets for boxes, keyed by keyOf(el) */
   offsets?: LayoutOffsets;
   keyOf?: (el: SysMLElement) => string;
+  /** per-edge drawing info (style / waypoints), keyed by edgeKeyOf(el) */
+  edges?: Record<string, EdgeLayout>;
+  edgeKeyOf?: (el: SysMLElement) => string;
 }
 
 /** Shift a node, its ports and children by (dx, dy). */
@@ -440,7 +465,7 @@ export function layoutDiagram(root: SysMLElement, options: LayoutOptions = {}): 
   const visit = (el: SysMLElement) => {
     for (const c of el.children) {
       if (isEdgeElement(c)) {
-        const edge = buildEdge(c, boxByEl);
+        const edge = buildEdge(c, boxByEl, options);
         if (edge) edges.push(edge);
       }
       visit(c);
@@ -455,7 +480,8 @@ export function layoutDiagram(root: SysMLElement, options: LayoutOptions = {}): 
 
 function buildEdge(
   el: SysMLElement,
-  boxByEl: Map<SysMLElement, DiagramNode>
+  boxByEl: Map<SysMLElement, DiagramNode>,
+  options: LayoutOptions
 ): DiagramEdge | undefined {
   const scope = el.parent;
   if (!scope) return undefined;
@@ -478,8 +504,21 @@ function buildEdge(
   const b = boxByEl.get(bEl);
   if (!a || !b || a === b) return undefined;
 
-  const p1 = rectAnchor(a, b);
-  const p2 = rectAnchor(b, a);
+  // saved drawing info: waypoints are stored relative to the midpoint of the
+  // two endpoint boxes, so they follow when boxes are moved
+  const key = options.edgeKeyOf?.(el);
+  const saved = key ? options.edges?.[key] : undefined;
+  const ca = centerOf(a);
+  const cb = centerOf(b);
+  const baseX = (ca.x + cb.x) / 2;
+  const baseY = (ca.y + cb.y) / 2;
+  const points: Point[] = (saved?.points ?? []).map((p) => ({
+    x: baseX + p.x,
+    y: baseY + p.y,
+  }));
+
+  const p1 = rectAnchorPt(a, points[0] ?? cb);
+  const p2 = rectAnchorPt(b, points[points.length - 1] ?? ca);
 
   let label: string | undefined = el.name;
   if (el.kind === "flow" && el.typedBy.length) label = (label ? label + ": " : "") + el.typedBy.join(",");
@@ -496,6 +535,11 @@ function buildEdge(
     y1: p1.y,
     x2: p2.x,
     y2: p2.y,
+    points,
+    style: saved?.style ?? "straight",
+    key,
+    baseX,
+    baseY,
     label,
     arrow: el.kind === "flow" || el.kind === "transition" || el.kind === "allocation",
     dashed: el.kind === "flow" || el.kind === "allocation" || el.kind === "bind",

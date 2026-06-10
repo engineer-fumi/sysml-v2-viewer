@@ -1,5 +1,13 @@
 import { useMemo, useRef, useState } from "react";
-import { DiagramEdge, DiagramNode, LayoutOffsets, layoutDiagram } from "../core/layout";
+import {
+  DiagramEdge,
+  DiagramNode,
+  EdgeLayout,
+  EdgeStyle,
+  LayoutOffsets,
+  Point,
+  layoutDiagram,
+} from "../core/layout";
 import { SysMLElement } from "../core/ast";
 
 export type EditMode = "select" | "connect" | `add:${string}`;
@@ -16,15 +24,19 @@ interface Interaction {
 interface Props {
   root: SysMLElement;
   selected?: SysMLElement;
-  /** secondary highlight (connect souce) */
+  /** secondary highlight (connect source) */
   marked?: SysMLElement;
   mode: EditMode;
   offsets: LayoutOffsets;
+  edges: Record<string, EdgeLayout>;
   keyOf: (el: SysMLElement) => string;
+  edgeKeyOf: (el: SysMLElement) => string;
   onElementClick: (el: SysMLElement) => void;
   onElementDoubleClick: (el: SysMLElement) => void;
   /** commit a box move (delta in diagram coordinates) */
   onMoveBox: (key: string, ddx: number, ddy: number) => void;
+  /** commit edge waypoints (relative to the edge base) */
+  onEdgeEdit: (key: string, points: Point[]) => void;
   /** click on empty canvas (used by the add modes) */
   onBackgroundClick?: () => void;
 }
@@ -185,11 +197,75 @@ function NodeBox({ node, it }: { node: DiagramNode; it: Interaction }) {
   );
 }
 
-function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
+// ---- edge rendering -------------------------------------------------------
+
+/** full point list: anchor, waypoints..., anchor */
+function fullPoints(edge: DiagramEdge, livePoints?: Point[]): Point[] {
+  const wps = livePoints ?? edge.points;
+  return [{ x: edge.x1, y: edge.y1 }, ...wps, { x: edge.x2, y: edge.y2 }];
+}
+
+function pathFor(pts: Point[], style: EdgeStyle): string {
+  if (pts.length < 2) return "";
+  if (style === "ortho") {
+    let d = `M ${pts[0].x} ${pts[0].y}`;
+    for (let i = 1; i < pts.length; i++) {
+      const prev = pts[i - 1];
+      const cur = pts[i];
+      d += ` L ${cur.x} ${prev.y} L ${cur.x} ${cur.y}`;
+    }
+    return d;
+  }
+  if (style === "curve") {
+    if (pts.length === 2) {
+      const [p0, p1] = pts;
+      const dx = (p1.x - p0.x) / 2;
+      return `M ${p0.x} ${p0.y} C ${p0.x + dx} ${p0.y}, ${p1.x - dx} ${p1.y}, ${p1.x} ${p1.y}`;
+    }
+    let d = `M ${pts[0].x} ${pts[0].y}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2;
+      const my = (pts[i].y + pts[i + 1].y) / 2;
+      d += ` Q ${pts[i].x} ${pts[i].y}, ${mx} ${my}`;
+    }
+    const last = pts[pts.length - 1];
+    d += ` L ${last.x} ${last.y}`;
+    return d;
+  }
+  return pts.map((p, i) => `${i ? "L" : "M"} ${p.x} ${p.y}`).join(" ");
+}
+
+function labelPos(pts: Point[]): Point {
+  if (pts.length === 2) {
+    return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+  }
+  return pts[Math.floor(pts.length / 2)];
+}
+
+interface EdgeHandlers {
+  onWaypointDown: (edge: DiagramEdge, index: number, isNew: boolean, at: Point, e: React.MouseEvent) => void;
+  onWaypointRemove: (edge: DiagramEdge, index: number) => void;
+}
+
+function EdgeLine({
+  edge,
+  it,
+  livePoints,
+  handlers,
+}: {
+  edge: DiagramEdge;
+  it: Interaction;
+  livePoints?: Point[];
+  handlers: EdgeHandlers;
+}) {
   const color = EDGE_COLOR[edge.kind] ?? "#74c7ec";
   const isSelected = it.selected === edge.el;
-  const mx = (edge.x1 + edge.x2) / 2;
-  const my = (edge.y1 + edge.y2) / 2;
+  const pts = fullPoints(edge, livePoints);
+  const d = pathFor(pts, edge.style);
+  const lp = labelPos(pts);
+  const showHandles = isSelected && it.mode === "select" && !!edge.key;
+  const wps = livePoints ?? edge.points;
+
   return (
     <g
       onClick={(e) => {
@@ -198,21 +274,20 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
       }}
       style={{ cursor: "pointer" }}
     >
-      <line x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} stroke="transparent" strokeWidth={10} />
-      <line
-        x1={edge.x1}
-        y1={edge.y1}
-        x2={edge.x2}
-        y2={edge.y2}
+      {/* fat invisible hit area */}
+      <path d={d} stroke="transparent" strokeWidth={12} fill="none" />
+      <path
+        d={d}
         stroke={isSelected ? "#f9e2af" : color}
         strokeWidth={isSelected ? 2.5 : 1.5}
         strokeDasharray={edge.dashed ? "6 4" : undefined}
+        fill="none"
         markerEnd={edge.arrow ? `url(#arrow-${edge.kind})` : undefined}
       />
       {edge.label && (
         <text
-          x={mx}
-          y={my - 6}
+          x={lp.x}
+          y={lp.y - 6}
           fontSize={10}
           fill={color}
           textAnchor="middle"
@@ -221,9 +296,56 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
           {edge.label}
         </text>
       )}
+      {showHandles && (
+        <>
+          {/* virtual handles on each segment midpoint: drag to add a waypoint */}
+          {pts.slice(0, -1).map((p, i) => {
+            const m = { x: (p.x + pts[i + 1].x) / 2, y: (p.y + pts[i + 1].y) / 2 };
+            return (
+              <circle
+                key={"v" + i}
+                cx={m.x}
+                cy={m.y}
+                r={4}
+                fill="#1e1e2e"
+                stroke="#f9e2af"
+                strokeWidth={1.2}
+                style={{ cursor: "copy" }}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  handlers.onWaypointDown(edge, i, true, m, e);
+                }}
+              />
+            );
+          })}
+          {/* real waypoints: drag to move, double-click to remove */}
+          {wps.map((p, i) => (
+            <circle
+              key={"w" + i}
+              cx={p.x}
+              cy={p.y}
+              r={5.5}
+              fill="#f9e2af"
+              stroke="#1e1e2e"
+              strokeWidth={1.5}
+              style={{ cursor: "move" }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                handlers.onWaypointDown(edge, i, false, p, e);
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                handlers.onWaypointRemove(edge, i);
+              }}
+            />
+          ))}
+        </>
+      )}
     </g>
   );
 }
+
+// ---- main view -------------------------------------------------------------
 
 export function DiagramView({
   root,
@@ -231,17 +353,22 @@ export function DiagramView({
   marked,
   mode,
   offsets,
+  edges,
   keyOf,
+  edgeKeyOf,
   onElementClick,
   onElementDoubleClick,
   onMoveBox,
+  onEdgeEdit,
   onBackgroundClick,
 }: Props) {
   const [view, setView] = useState({ tx: 20, ty: 20, scale: 1 });
   const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const boxDragRef = useRef<{ key: string; x: number; y: number } | null>(null);
+  const edgeDragRef = useRef<{ key: string; index: number; baseX: number; baseY: number } | null>(null);
   const downPosRef = useRef<{ x: number; y: number } | null>(null);
   const [liveDrag, setLiveDrag] = useState<{ key: string; dx: number; dy: number } | null>(null);
+  const [liveEdge, setLiveEdge] = useState<{ key: string; points: Point[] } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
   const effectiveOffsets = useMemo(() => {
@@ -254,9 +381,18 @@ export function DiagramView({
   }, [offsets, liveDrag]);
 
   const layout = useMemo(
-    () => layoutDiagram(root, { offsets: effectiveOffsets, keyOf }),
-    [root, effectiveOffsets, keyOf]
+    () => layoutDiagram(root, { offsets: effectiveOffsets, keyOf, edges, edgeKeyOf }),
+    [root, effectiveOffsets, keyOf, edges, edgeKeyOf]
   );
+
+  const toDiagram = (e: { clientX: number; clientY: number }): Point => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: (e.clientX - rect.left - view.tx) / view.scale,
+      y: (e.clientY - rect.top - view.ty) / view.scale,
+    };
+  };
 
   const onWheel = (e: React.WheelEvent) => {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -275,6 +411,30 @@ export function DiagramView({
     boxDragRef.current = { key: keyOf(node.el), x: e.clientX, y: e.clientY };
   };
 
+  const onWaypointDown = (
+    edge: DiagramEdge,
+    index: number,
+    isNew: boolean,
+    at: Point,
+    _e: React.MouseEvent
+  ) => {
+    if (!edge.key) return;
+    const points = [...(liveEdge?.key === edge.key ? liveEdge.points : edge.points)];
+    if (isNew) points.splice(index, 0, at);
+    edgeDragRef.current = { key: edge.key, index, baseX: edge.baseX, baseY: edge.baseY };
+    setLiveEdge({ key: edge.key, points });
+  };
+
+  const onWaypointRemove = (edge: DiagramEdge, index: number) => {
+    if (!edge.key) return;
+    const points = edge.points.filter((_, i) => i !== index);
+    onEdgeEdit(
+      edge.key,
+      points.map((p) => ({ x: p.x - edge.baseX, y: p.y - edge.baseY }))
+    );
+    setLiveEdge(null);
+  };
+
   const onMouseDown = (e: React.MouseEvent) => {
     downPosRef.current = { x: e.clientX, y: e.clientY };
     panRef.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
@@ -287,6 +447,17 @@ export function DiagramView({
   };
 
   const onMouseMove = (e: React.MouseEvent) => {
+    const ed = edgeDragRef.current;
+    if (ed) {
+      const p = toDiagram(e);
+      setLiveEdge((cur) => {
+        if (!cur || cur.key !== ed.key) return cur;
+        const points = [...cur.points];
+        points[ed.index] = p;
+        return { key: cur.key, points };
+      });
+      return;
+    }
     const bd = boxDragRef.current;
     if (bd) {
       setLiveDrag({
@@ -302,12 +473,21 @@ export function DiagramView({
   };
 
   const endDrag = () => {
+    const ed = edgeDragRef.current;
+    if (ed && liveEdge && liveEdge.key === ed.key) {
+      onEdgeEdit(
+        ed.key,
+        liveEdge.points.map((p) => ({ x: p.x - ed.baseX, y: p.y - ed.baseY }))
+      );
+    }
     if (boxDragRef.current && liveDrag) {
       if (Math.abs(liveDrag.dx) > 1 || Math.abs(liveDrag.dy) > 1) {
         onMoveBox(liveDrag.key, liveDrag.dx, liveDrag.dy);
       }
     }
+    edgeDragRef.current = null;
     boxDragRef.current = null;
+    setLiveEdge(null);
     setLiveDrag(null);
     panRef.current = null;
   };
@@ -352,6 +532,8 @@ export function DiagramView({
     onBoxMouseDown,
   };
 
+  const edgeHandlers: EdgeHandlers = { onWaypointDown, onWaypointRemove };
+
   return (
     <div className="diagram-view">
       <div className="diagram-toolbar">
@@ -392,7 +574,13 @@ export function DiagramView({
             <NodeBox key={i} node={n} it={interaction} />
           ))}
           {layout.edges.map((e, i) => (
-            <EdgeLine key={i} edge={e} it={interaction} />
+            <EdgeLine
+              key={i}
+              edge={e}
+              it={interaction}
+              livePoints={liveEdge && liveEdge.key === e.key ? liveEdge.points : undefined}
+              handlers={edgeHandlers}
+            />
           ))}
         </g>
       </svg>
