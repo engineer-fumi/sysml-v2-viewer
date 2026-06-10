@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
+import { SysMLElement, walk } from "../core/ast";
 import { SerializedModelFile, stripParents } from "../core/serialize";
-import { ModelIndex } from "./modelIndex";
+import { IndexedFile, ModelIndex } from "./modelIndex";
 
 /** Messages exchanged with the webview (see src/webview/DiagramApp.tsx). */
 interface SelectMessage {
@@ -10,11 +11,60 @@ interface SelectMessage {
   end: number;
 }
 
-interface ReadyMessage {
-  type: "ready";
+interface AddConnectMessage {
+  type: "edit";
+  action: "addConnect";
+  fileId: number;
+  /** start offset of the scope element (file scope when < 0) */
+  scopeStart: number;
+  source: string;
+  target: string;
 }
 
-type FromWebview = SelectMessage | ReadyMessage;
+interface AddElementMessage {
+  type: "edit";
+  action: "addElement";
+  kind: string;
+  fileId: number;
+  containerStart: number;
+}
+
+interface RenameMessage {
+  type: "edit";
+  action: "rename";
+  fileId: number;
+  nameStart: number;
+  nameEnd: number;
+  oldName: string;
+}
+
+interface DeleteMessage {
+  type: "edit";
+  action: "delete";
+  fileId: number;
+  start: number;
+  end: number;
+  label: string;
+}
+
+interface SaveLayoutMessage {
+  type: "saveLayout";
+  rootKey: string;
+  offsets: Record<string, { dx: number; dy: number }>;
+}
+
+type FromWebview =
+  | SelectMessage
+  | AddConnectMessage
+  | AddElementMessage
+  | RenameMessage
+  | DeleteMessage
+  | SaveLayoutMessage
+  | { type: "ready" };
+
+const LAYOUT_FILE = ".sysml-layout.json";
+
+type Layouts = Record<string, Record<string, { dx: number; dy: number }>>;
 
 export class DiagramPanel {
   static current: DiagramPanel | undefined;
@@ -54,9 +104,27 @@ export class DiagramPanel {
     panel.onDidDispose(() => this.dispose(), null, this.disposables);
 
     panel.webview.onDidReceiveMessage(
-      (msg: FromWebview) => {
-        if (msg.type === "ready") this.postModel();
-        if (msg.type === "select") this.revealInEditor(msg);
+      async (msg: FromWebview) => {
+        try {
+          switch (msg.type) {
+            case "ready":
+              await this.postModel();
+              break;
+            case "select":
+              await this.revealInEditor(msg);
+              break;
+            case "saveLayout":
+              await this.saveLayout(msg);
+              break;
+            case "edit":
+              await this.applyEdit(msg);
+              break;
+          }
+        } catch (e) {
+          vscode.window.showErrorMessage(
+            "SysML ダイアグラム操作に失敗しました: " + (e as Error).message
+          );
+        }
       },
       null,
       this.disposables
@@ -81,16 +149,160 @@ export class DiagramPanel {
 
   private schedulePostModel(): void {
     clearTimeout(this.postTimer);
-    this.postTimer = setTimeout(() => this.postModel(), 200);
+    this.postTimer = setTimeout(() => void this.postModel(), 200);
   }
 
-  private postModel(): void {
-    const files: SerializedModelFile[] = this.index.all().map((f) => ({
+  private async postModel(): Promise<void> {
+    const files: SerializedModelFile[] = this.index.all(false).map((f) => ({
       uri: f.uri.toString(),
       name: f.name,
       ast: stripParents(f.result.root),
     }));
-    this.panel.webview.postMessage({ type: "model", files });
+    const layouts = await this.loadLayouts();
+    await this.panel.webview.postMessage({ type: "model", files, layouts });
+  }
+
+  // ---- layout sidecar ----------------------------------------------------
+
+  private layoutUri(): vscode.Uri | undefined {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) return undefined;
+    return vscode.Uri.joinPath(ws.uri, LAYOUT_FILE);
+  }
+
+  private async loadLayouts(): Promise<Layouts> {
+    const uri = this.layoutUri();
+    if (!uri) return {};
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      return JSON.parse(Buffer.from(bytes).toString("utf8")) as Layouts;
+    } catch {
+      return {};
+    }
+  }
+
+  private async saveLayout(msg: SaveLayoutMessage): Promise<void> {
+    const uri = this.layoutUri();
+    if (!uri) return;
+    const layouts = await this.loadLayouts();
+    // drop zero offsets to keep the file small
+    const cleaned: Record<string, { dx: number; dy: number }> = {};
+    for (const [k, v] of Object.entries(msg.offsets)) {
+      if (Math.abs(v.dx) > 0.5 || Math.abs(v.dy) > 0.5) {
+        cleaned[k] = { dx: Math.round(v.dx), dy: Math.round(v.dy) };
+      }
+    }
+    if (Object.keys(cleaned).length) layouts[msg.rootKey] = cleaned;
+    else delete layouts[msg.rootKey];
+    await vscode.workspace.fs.writeFile(
+      uri,
+      Buffer.from(JSON.stringify(layouts, null, 2) + "\n", "utf8")
+    );
+  }
+
+  // ---- model edits ---------------------------------------------------------
+
+  private findElementAtStart(file: IndexedFile, start: number): SysMLElement | undefined {
+    let found: SysMLElement | undefined;
+    walk(file.result.root, (el) => {
+      if (el.start === start && !found && el !== file.result.root) found = el;
+    });
+    return found;
+  }
+
+  private indentOfLine(doc: vscode.TextDocument, offset: number): string {
+    const line = doc.lineAt(doc.positionAt(offset).line);
+    return line.text.slice(0, line.firstNonWhitespaceCharacterIndex);
+  }
+
+  /** Insert a member statement into an element body (or at end of file). */
+  private async insertInto(
+    file: IndexedFile,
+    scopeStart: number,
+    statement: string
+  ): Promise<void> {
+    const doc = await vscode.workspace.openTextDocument(file.uri);
+    const edit = new vscode.WorkspaceEdit();
+
+    if (scopeStart < 0) {
+      // file scope: append at the end
+      const endPos = doc.positionAt(doc.getText().length);
+      edit.insert(file.uri, endPos, `\n${statement}\n`);
+    } else {
+      const el = this.findElementAtStart(file, scopeStart);
+      if (!el) throw new Error("挿入先の要素が見つかりません (再描画後にやり直してください)");
+      const text = doc.getText();
+      const indent = this.indentOfLine(doc, el.start);
+      const lastChar = text.slice(el.end - 1, el.end);
+      if (lastChar === "}") {
+        // insert before the closing brace
+        edit.insert(file.uri, doc.positionAt(el.end - 1), `    ${statement}\n${indent}`);
+      } else {
+        // `;` body – convert to a braced body
+        edit.replace(
+          file.uri,
+          new vscode.Range(doc.positionAt(el.end - 1), doc.positionAt(el.end)),
+          ` {\n${indent}    ${statement}\n${indent}}`
+        );
+      }
+    }
+
+    await vscode.workspace.applyEdit(edit);
+  }
+
+  private async applyEdit(msg: AddConnectMessage | AddElementMessage | RenameMessage | DeleteMessage): Promise<void> {
+    const file = this.index.getByFileId(msg.fileId);
+    if (!file) return;
+
+    switch (msg.action) {
+      case "addConnect": {
+        await this.insertInto(file, msg.scopeStart, `connect ${msg.source} to ${msg.target};`);
+        break;
+      }
+      case "addElement": {
+        const input = await vscode.window.showInputBox({
+          prompt: `${msg.kind} の名前 (任意で「名前 : 型」)`,
+          placeHolder: msg.kind === "part" ? "engine : Engine" : "name : Type",
+          validateInput: (v) => (v.trim() ? undefined : "名前を入力してください"),
+        });
+        if (!input) return;
+        await this.insertInto(file, msg.containerStart, `${msg.kind} ${input.trim()};`);
+        break;
+      }
+      case "rename": {
+        const newName = await vscode.window.showInputBox({
+          prompt: `'${msg.oldName}' の新しい名前 (宣言のみ変更されます)`,
+          value: msg.oldName,
+          validateInput: (v) => (v.trim() ? undefined : "名前を入力してください"),
+        });
+        if (!newName || newName === msg.oldName) return;
+        const doc = await vscode.workspace.openTextDocument(file.uri);
+        const safe = /^[A-Za-z_][A-Za-z0-9_]*$/.test(newName.trim())
+          ? newName.trim()
+          : `'${newName.trim()}'`;
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(
+          file.uri,
+          new vscode.Range(doc.positionAt(msg.nameStart), doc.positionAt(msg.nameEnd)),
+          safe
+        );
+        await vscode.workspace.applyEdit(edit);
+        break;
+      }
+      case "delete": {
+        const doc = await vscode.workspace.openTextDocument(file.uri);
+        const text = doc.getText();
+        // expand to whole lines when the element is alone on them
+        let start = msg.start;
+        while (start > 0 && (text[start - 1] === " " || text[start - 1] === "\t")) start--;
+        let end = msg.end;
+        if (text[end] === "\n") end++;
+        const edit = new vscode.WorkspaceEdit();
+        edit.delete(file.uri, new vscode.Range(doc.positionAt(start), doc.positionAt(end)));
+        await vscode.workspace.applyEdit(edit);
+        break;
+      }
+    }
   }
 
   private async revealInEditor(msg: SelectMessage): Promise<void> {

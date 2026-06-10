@@ -37,6 +37,24 @@ exports.run = async function run() {
   assert.ok(diags.length > 0, "diagnostic appears after bad edit");
   console.log("PASS: diagnostics on syntax error:", diags[0].message);
   await vscode.commands.executeCommand("workbench.action.files.revert");
+  await new Promise((r) => setTimeout(r, 1000));
+
+  // semantic validation: unresolved type reference -> warning
+  await editor.edit((eb) => eb.insert(new vscode.Position(2, 0), "part bad : NoSuchType;\n"));
+  await new Promise((r) => setTimeout(r, 1500));
+  const semDiags = vscode.languages.getDiagnostics(defsUri);
+  const unresolved = semDiags.find((d) => d.message.includes("NoSuchType"));
+  assert.ok(unresolved, "unresolved reference diagnostic");
+  console.log("PASS: semantic validation (unresolved):", unresolved.message);
+  await vscode.commands.executeCommand("workbench.action.files.revert");
+  await new Promise((r) => setTimeout(r, 1000));
+
+  // stdlib resolution: Real (via ScalarValues import) resolves with no diagnostics
+  assert.strictEqual(
+    vscode.languages.getDiagnostics(defsUri).length, 0,
+    "stdlib types resolve cleanly"
+  );
+  console.log("PASS: stdlib resolution clean");
 
   // cross-file definition: "Engine" referenced in configuration.sysml
   const confDoc = await vscode.workspace.openTextDocument(confUri);

@@ -57,6 +57,8 @@ export interface DiagramNode {
   ports: DiagramPort[];
   children: DiagramNode[];
   depth: number;
+  /** pseudo-nodes used as edge anchors for the ports (kept in sync on shift) */
+  portBoxes?: DiagramNode[];
 }
 
 export interface DiagramEdge {
@@ -258,7 +260,19 @@ function place(
       y: Math.min(py, y + rel.size.h - 10),
     };
     node.ports.push(port);
-    boxByEl.set(p, { ...node, el: p, x: port.x - 5, y: port.y - 5, w: 10, h: 10, children: [], ports: [] });
+    const pseudo: DiagramNode = {
+      ...node,
+      el: p,
+      x: port.x - 5,
+      y: port.y - 5,
+      w: 10,
+      h: 10,
+      children: [],
+      ports: [],
+      portBoxes: undefined,
+    };
+    (node.portBoxes ??= []).push(pseudo);
+    boxByEl.set(p, pseudo);
   });
 
   rel.children.forEach((c, i) => {
@@ -318,7 +332,32 @@ function rectAnchor(a: DiagramNode, b: DiagramNode): { x: number; y: number } {
 
 // ---- main entry --------------------------------------------------------
 
-export function layoutDiagram(root: SysMLElement): DiagramLayout {
+export interface LayoutOffsets {
+  [elementKey: string]: { dx: number; dy: number };
+}
+
+export interface LayoutOptions {
+  /** manual position offsets for top-level boxes, keyed by keyOf(el) */
+  offsets?: LayoutOffsets;
+  keyOf?: (el: SysMLElement) => string;
+}
+
+/** Shift a node, its ports and children by (dx, dy). */
+function shiftNode(node: DiagramNode, dx: number, dy: number): void {
+  node.x += dx;
+  node.y += dy;
+  for (const p of node.ports) {
+    p.x += dx;
+    p.y += dy;
+  }
+  for (const pb of node.portBoxes ?? []) {
+    pb.x += dx;
+    pb.y += dy;
+  }
+  for (const c of node.children) shiftNode(c, dx, dy);
+}
+
+export function layoutDiagram(root: SysMLElement, options: LayoutOptions = {}): DiagramLayout {
   const boxByEl = new Map<SysMLElement, DiagramNode>();
 
   // top-level children of the chosen root become root boxes
@@ -357,7 +396,22 @@ export function layoutDiagram(root: SysMLElement): DiagramLayout {
     rowH = Math.max(rowH, rel.size.h);
   }
 
-  // collect edges anywhere under root
+  // apply manual offsets to top-level boxes (saved diagram layout)
+  const { offsets, keyOf } = options;
+  if (offsets && keyOf) {
+    for (const n of nodes) {
+      const o = offsets[keyOf(n.el)];
+      if (o) shiftNode(n, o.dx, o.dy);
+    }
+    // normalize so everything stays in positive coordinates
+    const minX = Math.min(GAP, ...nodes.map((n) => n.x));
+    const minY = Math.min(GAP, ...nodes.map((n) => n.y));
+    if (minX < GAP || minY < GAP) {
+      for (const n of nodes) shiftNode(n, GAP - minX, GAP - minY);
+    }
+  }
+
+  // collect edges anywhere under root (after offsets, so anchors are correct)
   const edges: DiagramEdge[] = [];
   const visit = (el: SysMLElement) => {
     for (const c of el.children) {

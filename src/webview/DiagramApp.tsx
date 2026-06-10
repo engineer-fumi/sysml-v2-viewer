@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { SysMLElement, createElement, qualifiedName, walk } from "../core/ast";
+import { LayoutOffsets } from "../core/layout";
 import { SerializedModelFile, restoreParents } from "../core/serialize";
-import { DiagramView } from "./DiagramView";
+import { DiagramView, EditMode } from "./DiagramView";
 
 declare function acquireVsCodeApi(): {
   postMessage(msg: unknown): void;
@@ -11,9 +12,12 @@ declare function acquireVsCodeApi(): {
 
 const vscode = acquireVsCodeApi();
 
+type Layouts = Record<string, LayoutOffsets>;
+
 interface ModelMessage {
   type: "model";
   files: SerializedModelFile[];
+  layouts?: Layouts;
 }
 
 interface HighlightMessage {
@@ -54,44 +58,80 @@ function diagramRootCandidates(root: SysMLElement): SysMLElement[] {
   return out;
 }
 
+function ancestorsOf(el: SysMLElement): SysMLElement[] {
+  const out: SysMLElement[] = [];
+  let cur = el.parent;
+  while (cur) {
+    out.push(cur);
+    cur = cur.parent;
+  }
+  return out;
+}
+
+/** dotted path from `scope` (exclusive) down to `el` */
+function pathFrom(scope: SysMLElement, el: SysMLElement): string {
+  const parts: string[] = [];
+  let cur: SysMLElement | undefined = el;
+  while (cur && cur !== scope) {
+    if (cur.name) parts.unshift(cur.name);
+    cur = cur.parent;
+  }
+  return parts.join(".");
+}
+
+const ADD_KINDS = ["part", "port", "attribute", "item", "action", "state", "requirement"] as const;
+
 export function DiagramApp() {
   const [files, setFiles] = useState<SerializedModelFile[]>([]);
+  const [layouts, setLayouts] = useState<Layouts>({});
   const [rootKey, setRootKey] = useState<string>("");
   const [selected, setSelected] = useState<SysMLElement | undefined>(undefined);
+  const [mode, setMode] = useState<EditMode>("select");
+  const [connectSource, setConnectSource] = useState<SysMLElement | undefined>(undefined);
+  const [pendingHighlight, setPendingHighlight] = useState<
+    { fileId: number; offset: number } | undefined
+  >(undefined);
 
   // combined model from all files
-  const combinedRoot = useMemo(() => {
+  const { combinedRoot, fileNameById } = useMemo(() => {
     const root = createElement("namespace");
+    const names = new Map<number, string>();
     for (const f of files) {
       const ast = restoreParents(f.ast);
       ast.kind = "file";
       ast.name = f.name;
       ast.parent = root;
       root.children.push(ast);
+      if (ast.fileId !== undefined) names.set(ast.fileId, f.name);
     }
-    return root;
+    return { combinedRoot: root, fileNameById: names };
   }, [files]);
 
+  /** stable element key: fileName#qualifiedName (survives reloads) */
+  const keyOf = useCallback(
+    (el: SysMLElement) =>
+      `${el.fileId !== undefined ? fileNameById.get(el.fileId) ?? el.fileId : ""}#${qualifiedName(el)}`,
+    [fileNameById]
+  );
+
   const rootCandidates = useMemo(() => diagramRootCandidates(combinedRoot), [combinedRoot]);
-  const candidateKey = (el: SysMLElement) => `${el.fileId}:${qualifiedName(el)}`;
 
   const diagramRoot = useMemo(() => {
     if (rootKey) {
-      const found = rootCandidates.find((el) => candidateKey(el) === rootKey);
+      const found = rootCandidates.find((el) => keyOf(el) === rootKey);
       if (found) return found;
     }
     return combinedRoot;
-  }, [combinedRoot, rootCandidates, rootKey]);
+  }, [combinedRoot, rootCandidates, rootKey, keyOf]);
 
-  const [pendingHighlight, setPendingHighlight] = useState<
-    { fileId: number; offset: number } | undefined
-  >(undefined);
+  const offsets = layouts[rootKey] ?? {};
 
   useEffect(() => {
     const onMessage = (e: MessageEvent<FromExtension>) => {
       const msg = e.data;
       if (msg.type === "model") {
         setFiles(msg.files);
+        if (msg.layouts) setLayouts(msg.layouts);
       } else if (msg.type === "highlight") {
         setPendingHighlight({ fileId: msg.fileId, offset: msg.offset });
       }
@@ -111,7 +151,93 @@ export function DiagramApp() {
     setPendingHighlight(undefined);
   }, [pendingHighlight, combinedRoot]);
 
-  const handleSelect = (el: SysMLElement) => {
+  // ESC resets the edit mode; Delete removes the selected element
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setMode("select");
+        setConnectSource(undefined);
+      }
+      if (e.key === "Delete" && selected && selected.kind !== "file" && selected.fileId !== undefined) {
+        vscode.postMessage({
+          type: "edit",
+          action: "delete",
+          fileId: selected.fileId,
+          start: selected.start,
+          end: selected.end,
+          label: selected.name ?? selected.kind,
+        });
+        setSelected(undefined);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
+
+  // ---- element interactions ------------------------------------------------
+
+  const requestConnect = (src: SysMLElement, tgt: SysMLElement) => {
+    if (src === tgt || src.fileId === undefined || tgt.fileId === undefined) return;
+    const srcAncestors = new Set<SysMLElement>(ancestorsOf(src));
+    let scope: SysMLElement | undefined;
+    for (let cur = tgt.parent; cur; cur = cur.parent) {
+      if (srcAncestors.has(cur)) {
+        scope = cur;
+        break;
+      }
+    }
+    if (!scope || scope === combinedRoot) {
+      // different files: insert at the end of the source file, qualified target
+      const fileEl = combinedRoot.children.find((c) => c.fileId === src.fileId);
+      if (!fileEl) return;
+      vscode.postMessage({
+        type: "edit",
+        action: "addConnect",
+        fileId: src.fileId,
+        scopeStart: -1,
+        source: qualifiedName(src),
+        target: qualifiedName(tgt),
+      });
+      return;
+    }
+    const insertAtFile = scope.kind === "file";
+    vscode.postMessage({
+      type: "edit",
+      action: "addConnect",
+      fileId: scope.fileId ?? src.fileId,
+      scopeStart: insertAtFile ? -1 : scope.start,
+      source: pathFrom(scope, src),
+      target: pathFrom(scope, tgt),
+    });
+  };
+
+  const handleElementClick = (el: SysMLElement) => {
+    if (mode === "connect") {
+      if (!connectSource) {
+        setConnectSource(el);
+        setSelected(el);
+      } else {
+        requestConnect(connectSource, el);
+        setConnectSource(undefined);
+        setMode("select");
+      }
+      return;
+    }
+    if (mode.startsWith("add:")) {
+      const kind = mode.slice(4);
+      if (el.fileId !== undefined) {
+        vscode.postMessage({
+          type: "edit",
+          action: "addElement",
+          kind,
+          fileId: el.fileId,
+          containerStart: el.kind === "file" ? -1 : el.start,
+        });
+      }
+      setMode("select");
+      return;
+    }
+    // select mode: sync to editor
     setSelected(el);
     if (el.fileId === undefined || el.kind === "file") return;
     vscode.postMessage({
@@ -122,25 +248,91 @@ export function DiagramApp() {
     });
   };
 
+  const handleElementDoubleClick = (el: SysMLElement) => {
+    if (el.fileId === undefined || el.nameStart === undefined || !el.name) return;
+    vscode.postMessage({
+      type: "edit",
+      action: "rename",
+      fileId: el.fileId,
+      nameStart: el.nameStart,
+      nameEnd: el.nameEnd ?? el.nameStart + el.name.length,
+      oldName: el.name,
+    });
+  };
+
+  const handleMoveBox = (key: string, ddx: number, ddy: number) => {
+    const cur = offsets[key] ?? { dx: 0, dy: 0 };
+    const next = { ...offsets, [key]: { dx: cur.dx + ddx, dy: cur.dy + ddy } };
+    setLayouts((prev) => ({ ...prev, [rootKey]: next }));
+    vscode.postMessage({ type: "saveLayout", rootKey, offsets: next });
+  };
+
+  const resetLayout = () => {
+    setLayouts((prev) => ({ ...prev, [rootKey]: {} }));
+    vscode.postMessage({ type: "saveLayout", rootKey, offsets: {} });
+  };
+
+  const modeButton = (m: EditMode, label: string, title: string) => (
+    <button
+      className={mode === m ? "mode-btn active" : "mode-btn"}
+      onClick={() => {
+        setMode(mode === m ? "select" : m);
+        setConnectSource(undefined);
+      }}
+      title={title}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <div className="app">
       <div className="header">
         <span className="title">SysML ダイアグラム</span>
         <select
           className="root-select"
-          value={diagramRoot === combinedRoot ? "" : candidateKey(diagramRoot)}
+          value={diagramRoot === combinedRoot ? "" : keyOf(diagramRoot)}
           onChange={(e) => setRootKey(e.target.value)}
         >
           <option value="">モデル全体 (全ファイル)</option>
           {rootCandidates.map((el, i) => (
-            <option key={i} value={candidateKey(el)}>
+            <option key={i} value={keyOf(el)}>
               {qualifiedName(el)} ({el.kind})
             </option>
           ))}
         </select>
         <span className="file-count">{files.length} ファイル</span>
       </div>
-      <DiagramView root={diagramRoot} selected={selected} onSelect={handleSelect} />
+      <div className="edit-toolbar">
+        {modeButton("select", "⬚ 選択", "クリックで選択、トップレベル要素はドラッグで配置変更")}
+        {modeButton("connect", "⌁ 接続", "2 つの要素を順にクリックして connect 文を挿入")}
+        {ADD_KINDS.map((k) =>
+          modeButton(`add:${k}` as EditMode, `+${k}`, `コンテナをクリックして ${k} を追加`)
+        )}
+        <button className="mode-btn" onClick={resetLayout} title="この図の手動配置をリセット">
+          ⟲ 配置リセット
+        </button>
+        <span className="mode-hint">
+          {mode === "connect"
+            ? connectSource
+              ? `接続元: ${connectSource.name ?? connectSource.kind} → 接続先をクリック`
+              : "接続元をクリック"
+            : mode.startsWith("add:")
+              ? "追加先のコンテナをクリック (Esc で取消)"
+              : "ダブルクリックでリネーム / Delete で削除"}
+        </span>
+      </div>
+      <DiagramView
+        root={diagramRoot}
+        selected={selected}
+        marked={connectSource}
+        mode={mode}
+        offsets={offsets}
+        keyOf={keyOf}
+        onElementClick={handleElementClick}
+        onElementDoubleClick={handleElementDoubleClick}
+        onMoveBox={handleMoveBox}
+      />
     </div>
   );
 }
