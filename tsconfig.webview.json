@@ -5,10 +5,12 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "types": ["node", "vscode"],
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src/webview/**/*.tsx", "src/webview/**/*.ts", "src/core/**/*.ts"]
 }

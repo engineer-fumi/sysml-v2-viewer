@@ -27,7 +27,7 @@ export const KEYWORDS = new Set([
   "first", "flow", "for", "fork", "frame", "from", "hastype", "if", "implies",
   "import", "in", "include", "individual", "inout", "interface", "istype",
   "item", "join", "language", "library", "loop", "merge", "message",
-  "metadata", "namespace", "non-unique", "not", "null", "objective",
+  "metadata", "namespace", "non-unique", "nonunique", "not", "null", "objective",
   "occurrence", "of", "or", "ordered", "out", "package", "parallel", "part",
   "perform", "port", "private", "protected", "public", "readonly", "redefines",
   "ref", "references", "render", "rendering", "rep", "require", "requirement",

@@ -1,10 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
-import "./styles.css";
+import { DiagramApp } from "./DiagramApp";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <DiagramApp />
   </React.StrictMode>
 );

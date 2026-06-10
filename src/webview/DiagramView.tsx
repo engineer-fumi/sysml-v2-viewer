@@ -1,11 +1,39 @@
 import { useMemo, useRef, useState } from "react";
-import { DiagramEdge, DiagramNode, layoutDiagram } from "../diagram/layout";
-import { SysMLElement } from "../sysml/ast";
+import { DiagramEdge, DiagramNode, LayoutOffsets, layoutDiagram } from "../core/layout";
+import { SysMLElement } from "../core/ast";
+
+export type EditMode =
+  | "select"
+  | "connect"
+  | "add:part"
+  | "add:port"
+  | "add:attribute"
+  | "add:item"
+  | "add:action"
+  | "add:state"
+  | "add:requirement";
+
+interface Interaction {
+  mode: EditMode;
+  selected?: SysMLElement;
+  marked?: SysMLElement;
+  onClick: (el: SysMLElement) => void;
+  onDoubleClick: (el: SysMLElement) => void;
+  onBoxMouseDown: (node: DiagramNode, e: React.MouseEvent) => void;
+}
 
 interface Props {
   root: SysMLElement;
   selected?: SysMLElement;
-  onSelect: (el: SysMLElement) => void;
+  /** secondary highlight (connect souce) */
+  marked?: SysMLElement;
+  mode: EditMode;
+  offsets: LayoutOffsets;
+  keyOf: (el: SysMLElement) => string;
+  onElementClick: (el: SysMLElement) => void;
+  onElementDoubleClick: (el: SysMLElement) => void;
+  /** commit a top-level box move (delta in diagram coordinates) */
+  onMoveBox: (key: string, ddx: number, ddy: number) => void;
 }
 
 const KIND_FILL: Record<string, string> = {
@@ -39,17 +67,16 @@ function fillFor(node: DiagramNode): string {
   return KIND_FILL[node.el.kind] ?? "#252536";
 }
 
-function NodeBox({
-  node,
-  selected,
-  onSelect,
-}: {
-  node: DiagramNode;
-  selected?: SysMLElement;
-  onSelect: (el: SysMLElement) => void;
-}) {
-  const isSelected = selected === node.el;
+function strokeFor(node: DiagramNode, it: Interaction): { stroke: string; width: number } {
+  if (it.selected === node.el) return { stroke: "#f9e2af", width: 2.5 };
+  if (it.marked === node.el) return { stroke: "#a6e3a1", width: 2.5 };
+  return { stroke: "#585b70", width: 1.2 };
+}
+
+function NodeBox({ node, it }: { node: DiagramNode; it: Interaction }) {
+  const { stroke, width } = strokeFor(node, it);
   const headerY = node.y + 14;
+  const draggable = node.depth === 0 && it.mode === "select";
   return (
     <g>
       <rect
@@ -59,13 +86,23 @@ function NodeBox({
         height={node.h}
         rx={node.rounded ? 14 : 4}
         fill={fillFor(node)}
-        stroke={isSelected ? "#f9e2af" : "#585b70"}
-        strokeWidth={isSelected ? 2.5 : 1.2}
+        stroke={stroke}
+        strokeWidth={width}
         onClick={(e) => {
           e.stopPropagation();
-          onSelect(node.el);
+          it.onClick(node.el);
         }}
-        style={{ cursor: "pointer" }}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          it.onDoubleClick(node.el);
+        }}
+        onMouseDown={(e) => {
+          if (draggable) {
+            e.stopPropagation();
+            it.onBoxMouseDown(node, e);
+          }
+        }}
+        style={{ cursor: draggable ? "move" : "pointer" }}
       />
       <text
         x={node.x + node.w / 2}
@@ -118,13 +155,20 @@ function NodeBox({
         </>
       )}
       {node.ports.map((p, i) => (
-        <g key={i} onClick={(e) => { e.stopPropagation(); onSelect(p.el); }} style={{ cursor: "pointer" }}>
+        <g
+          key={i}
+          onClick={(e) => {
+            e.stopPropagation();
+            it.onClick(p.el);
+          }}
+          style={{ cursor: "pointer" }}
+        >
           <rect
             x={p.x - 5}
             y={p.y - 5}
             width={10}
             height={10}
-            fill={selected === p.el ? "#f9e2af" : "#fab387"}
+            fill={it.selected === p.el ? "#f9e2af" : it.marked === p.el ? "#a6e3a1" : "#fab387"}
             stroke="#1e1e2e"
             strokeWidth={1}
           />
@@ -141,28 +185,25 @@ function NodeBox({
         </g>
       ))}
       {node.children.map((c, i) => (
-        <NodeBox key={i} node={c} selected={selected} onSelect={onSelect} />
+        <NodeBox key={i} node={c} it={it} />
       ))}
     </g>
   );
 }
 
-function EdgeLine({
-  edge,
-  selected,
-  onSelect,
-}: {
-  edge: DiagramEdge;
-  selected?: SysMLElement;
-  onSelect: (el: SysMLElement) => void;
-}) {
+function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
   const color = EDGE_COLOR[edge.kind] ?? "#74c7ec";
-  const isSelected = selected === edge.el;
+  const isSelected = it.selected === edge.el;
   const mx = (edge.x1 + edge.x2) / 2;
   const my = (edge.y1 + edge.y2) / 2;
   return (
-    <g onClick={(e) => { e.stopPropagation(); onSelect(edge.el); }} style={{ cursor: "pointer" }}>
-      {/* fat invisible hit area */}
+    <g
+      onClick={(e) => {
+        e.stopPropagation();
+        it.onClick(edge.el);
+      }}
+      style={{ cursor: "pointer" }}
+    >
       <line x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} stroke="transparent" strokeWidth={10} />
       <line
         x1={edge.x1}
@@ -190,11 +231,36 @@ function EdgeLine({
   );
 }
 
-export function DiagramView({ root, selected, onSelect }: Props) {
-  const layout = useMemo(() => layoutDiagram(root), [root]);
+export function DiagramView({
+  root,
+  selected,
+  marked,
+  mode,
+  offsets,
+  keyOf,
+  onElementClick,
+  onElementDoubleClick,
+  onMoveBox,
+}: Props) {
   const [view, setView] = useState({ tx: 20, ty: 20, scale: 1 });
-  const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+  const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+  const boxDragRef = useRef<{ key: string; x: number; y: number } | null>(null);
+  const [liveDrag, setLiveDrag] = useState<{ key: string; dx: number; dy: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+
+  const effectiveOffsets = useMemo(() => {
+    if (!liveDrag) return offsets;
+    const cur = offsets[liveDrag.key] ?? { dx: 0, dy: 0 };
+    return {
+      ...offsets,
+      [liveDrag.key]: { dx: cur.dx + liveDrag.dx, dy: cur.dy + liveDrag.dy },
+    };
+  }, [offsets, liveDrag]);
+
+  const layout = useMemo(
+    () => layoutDiagram(root, { offsets: effectiveOffsets, keyOf }),
+    [root, effectiveOffsets, keyOf]
+  );
 
   const onWheel = (e: React.WheelEvent) => {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -209,16 +275,38 @@ export function DiagramView({ root, selected, onSelect }: Props) {
     });
   };
 
-  const onMouseDown = (e: React.MouseEvent) => {
-    dragRef.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+  const onBoxMouseDown = (node: DiagramNode, e: React.MouseEvent) => {
+    boxDragRef.current = { key: keyOf(node.el), x: e.clientX, y: e.clientY };
   };
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    panRef.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+  };
+
   const onMouseMove = (e: React.MouseEvent) => {
-    const d = dragRef.current;
+    const bd = boxDragRef.current;
+    if (bd) {
+      setLiveDrag({
+        key: bd.key,
+        dx: (e.clientX - bd.x) / view.scale,
+        dy: (e.clientY - bd.y) / view.scale,
+      });
+      return;
+    }
+    const d = panRef.current;
     if (!d) return;
     setView((v) => ({ ...v, tx: d.tx + e.clientX - d.x, ty: d.ty + e.clientY - d.y }));
   };
+
   const endDrag = () => {
-    dragRef.current = null;
+    if (boxDragRef.current && liveDrag) {
+      if (Math.abs(liveDrag.dx) > 1 || Math.abs(liveDrag.dy) > 1) {
+        onMoveBox(liveDrag.key, liveDrag.dx, liveDrag.dy);
+      }
+    }
+    boxDragRef.current = null;
+    setLiveDrag(null);
+    panRef.current = null;
   };
 
   const fit = () => {
@@ -250,6 +338,15 @@ export function DiagramView({ root, selected, onSelect }: Props) {
     a.download = "diagram.svg";
     a.click();
     URL.revokeObjectURL(a.href);
+  };
+
+  const interaction: Interaction = {
+    mode,
+    selected,
+    marked,
+    onClick: onElementClick,
+    onDoubleClick: onElementDoubleClick,
+    onBoxMouseDown,
   };
 
   return (
@@ -288,15 +385,18 @@ export function DiagramView({ root, selected, onSelect }: Props) {
         </defs>
         <g data-viewport="true" transform={`translate(${view.tx},${view.ty}) scale(${view.scale})`}>
           {layout.nodes.map((n, i) => (
-            <NodeBox key={i} node={n} selected={selected} onSelect={onSelect} />
+            <NodeBox key={i} node={n} it={interaction} />
           ))}
           {layout.edges.map((e, i) => (
-            <EdgeLine key={i} edge={e} selected={selected} onSelect={onSelect} />
+            <EdgeLine key={i} edge={e} it={interaction} />
           ))}
         </g>
       </svg>
       {layout.nodes.length === 0 && (
-        <div className="diagram-empty">表示できる要素がありません。<br />package / part などを記述するとここに図が表示されます。</div>
+        <div className="diagram-empty">
+          表示できる要素がありません。<br />
+          ワークスペースの .sysml ファイルに package / part などを記述すると図が表示されます。
+        </div>
       )}
     </div>
   );
