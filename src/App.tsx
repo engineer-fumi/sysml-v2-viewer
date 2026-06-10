@@ -2,6 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DiagramView } from "./components/DiagramView";
 import { EditorPane, EditorSelection } from "./components/EditorPane";
 import { OutlineTree } from "./components/OutlineTree";
+import { RemoteFile, SshDialog } from "./components/SshDialog";
+import {
+  LoadedFile,
+  SYSML_EXT,
+  downloadFile,
+  filesFromDrop,
+  pickDirectory,
+  pickFiles,
+  writeToHandle,
+} from "./fsAccess";
+import { SshSession, sshDisconnect, sshWrite } from "./remote/sshClient";
 import { parseSysML } from "./sysml/parser";
 import { ParseError, SysMLElement, createElement, qualifiedName, walk } from "./sysml/ast";
 import { DEFAULT_SAMPLE, SAMPLES, Sample } from "./samples";
@@ -10,6 +21,11 @@ interface WorkFile {
   id: number;
   name: string;
   source: string;
+  dirty: boolean;
+  /** writable handle when opened via the File System Access API */
+  handle?: FileSystemFileHandle;
+  /** absolute path on the SSH host when loaded remotely */
+  remotePath?: string;
 }
 
 function offsetToLineCol(src: string, offset: number): { line: number; col: number } {
@@ -55,51 +71,14 @@ function diagramRootCandidates(root: SysMLElement): SysMLElement[] {
   return out;
 }
 
-const SYSML_EXT = /\.(sysml|kerml)$/i;
-
-/** Recursively collect .sysml files from a drag&drop item list. */
-async function collectDroppedFiles(dt: DataTransfer): Promise<File[]> {
-  const out: File[] = [];
-
-  const readEntries = (reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> =>
-    new Promise((resolve) => reader.readEntries(resolve, () => resolve([])));
-
-  const fileOf = (entry: FileSystemFileEntry): Promise<File | null> =>
-    new Promise((resolve) => entry.file(resolve, () => resolve(null)));
-
-  const visit = async (entry: FileSystemEntry): Promise<void> => {
-    if (entry.isFile) {
-      if (SYSML_EXT.test(entry.name)) {
-        const f = await fileOf(entry as FileSystemFileEntry);
-        if (f) out.push(f);
-      }
-    } else if (entry.isDirectory) {
-      const reader = (entry as FileSystemDirectoryEntry).createReader();
-      for (;;) {
-        const batch = await readEntries(reader);
-        if (!batch.length) break;
-        for (const e of batch) await visit(e);
-      }
-    }
-  };
-
-  const entries = [...dt.items]
-    .map((item) => item.webkitGetAsEntry?.())
-    .filter((e): e is FileSystemEntry => !!e);
-
-  if (entries.length) {
-    for (const e of entries) await visit(e);
-  } else {
-    for (const f of [...dt.files]) {
-      if (SYSML_EXT.test(f.name)) out.push(f);
-    }
-  }
-  return out;
-}
-
 let nextFileId = 1;
 function sampleToFiles(sample: Sample): WorkFile[] {
-  return sample.files.map((f) => ({ id: nextFileId++, name: f.name, source: f.source }));
+  return sample.files.map((f) => ({
+    id: nextFileId++,
+    name: f.name,
+    source: f.source,
+    dirty: false,
+  }));
 }
 
 export default function App() {
@@ -108,9 +87,19 @@ export default function App() {
   const [selected, setSelected] = useState<SysMLElement | undefined>(undefined);
   const [editorSelect, setEditorSelect] = useState<EditorSelection | undefined>(undefined);
   const [diagramRootKey, setDiagramRootKey] = useState<string>("");
+  const [sshSession, setSshSession] = useState<SshSession | undefined>(undefined);
+  const [sshDialogOpen, setSshDialogOpen] = useState(false);
+  const [toast, setToast] = useState("");
   const selectSeq = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dirInputRef = useRef<HTMLInputElement>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(""), 3000);
+  }, []);
 
   // ---- resizable panes ----
   const DEFAULT_SIDEBAR_W = 290;
@@ -206,11 +195,8 @@ export default function App() {
   // ---- selection ----
   const handleSelect = useCallback((el: SysMLElement) => {
     setSelected(el);
-    if (el.kind === "file") {
-      if (el.fileId !== undefined) setActiveId(el.fileId);
-      return;
-    }
     if (el.fileId !== undefined) setActiveId(el.fileId);
+    if (el.kind === "file") return;
     const start = el.nameStart ?? el.start;
     const end = el.nameEnd ?? Math.min(el.end, el.start + 1);
     selectSeq.current++;
@@ -228,7 +214,9 @@ export default function App() {
   const handleChange = useCallback(
     (value: string) => {
       setFiles((fs) =>
-        fs.map((f) => (f.id === activeId && f.source !== value ? { ...f, source: value } : f))
+        fs.map((f) =>
+          f.id === activeId && f.source !== value ? { ...f, source: value, dirty: true } : f
+        )
       );
     },
     [activeId]
@@ -238,23 +226,56 @@ export default function App() {
   const filesRef = useRef(files);
   filesRef.current = files;
 
-  const addOrUpdateFiles = useCallback(async (incoming: File[], replace = false) => {
-    if (!incoming.length) return;
-    const loaded = await Promise.all(
-      incoming.map(async (f) => ({ name: f.name, source: await f.text() }))
-    );
+  const addLoadedFiles = useCallback((loaded: LoadedFile[], replace = false) => {
+    if (!loaded.length) return;
     const base = replace ? [] : filesRef.current.map((f) => ({ ...f }));
     for (const l of loaded) {
       const existing = base.find((f) => f.name === l.name);
-      if (existing) existing.source = l.source;
-      else base.push({ id: nextFileId++, name: l.name, source: l.source });
+      if (existing) {
+        existing.source = l.source;
+        existing.handle = l.handle;
+        existing.dirty = false;
+        existing.remotePath = undefined;
+      } else {
+        base.push({
+          id: nextFileId++,
+          name: l.name,
+          source: l.source,
+          dirty: false,
+          handle: l.handle,
+        });
+      }
     }
-    if (!base.length) return;
     setFiles(base);
     setActiveId(base[base.length - 1].id);
     setSelected(undefined);
     setDiagramRootKey("");
   }, []);
+
+  const openFiles = async () => {
+    const picked = await pickFiles().catch((e) => {
+      showToast("読み込みに失敗: " + (e as Error).message);
+      return [];
+    });
+    if (picked === null) {
+      fileInputRef.current?.click(); // no FS Access API – fall back
+      return;
+    }
+    addLoadedFiles(picked);
+  };
+
+  const openDirectory = async () => {
+    const picked = await pickDirectory().catch((e) => {
+      showToast("読み込みに失敗: " + (e as Error).message);
+      return [];
+    });
+    if (picked === null) {
+      dirInputRef.current?.click(); // no FS Access API – fall back
+      return;
+    }
+    if (picked.length) addLoadedFiles(picked, /*replace*/ true);
+    else showToast(".sysml ファイルが見つかりませんでした");
+  };
 
   const newFile = () => {
     const n = files.filter((f) => f.name.startsWith("untitled")).length + 1;
@@ -262,6 +283,7 @@ export default function App() {
       id: nextFileId++,
       name: `untitled-${n}.sysml`,
       source: "package NewModel {\n    \n}\n",
+      dirty: true,
     };
     setFiles((fs) => [...fs, file]);
     setActiveId(file.id);
@@ -269,10 +291,14 @@ export default function App() {
 
   const closeFile = (id: number) => {
     const fs = filesRef.current;
+    const target = fs.find((f) => f.id === id);
+    if (target?.dirty && !window.confirm(`${target.name} は未保存の変更があります。閉じますか?`)) {
+      return;
+    }
     const idx = fs.findIndex((f) => f.id === id);
     let next = fs.filter((f) => f.id !== id);
     if (!next.length) {
-      next = [{ id: nextFileId++, name: "untitled-1.sysml", source: "" }];
+      next = [{ id: nextFileId++, name: "untitled-1.sysml", source: "", dirty: false }];
     }
     setFiles(next);
     if (!next.some((f) => f.id === activeId)) {
@@ -281,14 +307,89 @@ export default function App() {
     setSelected(undefined);
   };
 
-  const saveFile = () => {
-    if (!activeFile) return;
-    const blob = new Blob([activeFile.source], { type: "text/plain;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = activeFile.name;
-    a.click();
-    URL.revokeObjectURL(a.href);
+  // ---- saving ----
+  const saveOne = useCallback(
+    async (file: WorkFile): Promise<boolean> => {
+      try {
+        if (file.handle) {
+          await writeToHandle(file.handle, file.source);
+        } else if (file.remotePath && sshSession) {
+          await sshWrite(sshSession.sessionId, file.remotePath, file.source);
+        } else if (file.remotePath && !sshSession) {
+          throw new Error("SSH セッションが切断されています");
+        } else {
+          downloadFile(file.name, file.source);
+        }
+        setFiles((fs) => fs.map((f) => (f.id === file.id ? { ...f, dirty: false } : f)));
+        return true;
+      } catch (e) {
+        showToast(`保存に失敗 (${file.name}): ` + (e as Error).message);
+        return false;
+      }
+    },
+    [sshSession, showToast]
+  );
+
+  const saveActive = useCallback(async () => {
+    const file = filesRef.current.find((f) => f.id === activeId);
+    if (!file) return;
+    if (await saveOne(file)) {
+      const dest = file.handle ? "ローカルファイル" : file.remotePath ? "リモート" : "ダウンロード";
+      showToast(`保存しました: ${file.name} (${dest})`);
+    }
+  }, [activeId, saveOne, showToast]);
+
+  const saveAll = useCallback(async () => {
+    const targets = filesRef.current.filter(
+      (f) => f.dirty && (f.handle || (f.remotePath && sshSession))
+    );
+    if (!targets.length) {
+      showToast("直接保存できる未保存ファイルはありません");
+      return;
+    }
+    let ok = 0;
+    for (const f of targets) {
+      if (await saveOne(f)) ok++;
+    }
+    showToast(`${ok}/${targets.length} ファイルを保存しました`);
+  }, [saveOne, sshSession, showToast]);
+
+  // Ctrl+S / Cmd+S
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (e.shiftKey) saveAll();
+        else saveActive();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [saveActive, saveAll]);
+
+  // ---- SSH ----
+  const handleSshLoaded = (session: SshSession, remoteFiles: RemoteFile[]) => {
+    setSshDialogOpen(false);
+    setSshSession(session);
+    const base: WorkFile[] = remoteFiles.map((rf) => ({
+      id: nextFileId++,
+      name: rf.name,
+      source: rf.source,
+      dirty: false,
+      remotePath: rf.path,
+    }));
+    setFiles(base);
+    setActiveId(base[0].id);
+    setSelected(undefined);
+    setDiagramRootKey("");
+    showToast(`${session.label} から ${base.length} ファイルを読み込みました`);
+  };
+
+  const disconnectSsh = async () => {
+    if (!sshSession) return;
+    await sshDisconnect(sshSession.sessionId).catch(() => undefined);
+    setSshSession(undefined);
+    showToast("SSH 接続を切断しました");
   };
 
   const loadSample = (idx: number) => {
@@ -302,6 +403,7 @@ export default function App() {
   };
 
   const activeErrors = activeParsed?.result.errors ?? [];
+  const dirtyCount = files.filter((f) => f.dirty).length;
 
   return (
     <div
@@ -309,15 +411,21 @@ export default function App() {
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
-        collectDroppedFiles(e.dataTransfer).then((fs) => addOrUpdateFiles(fs));
+        filesFromDrop(e.dataTransfer).then((fs) => addLoadedFiles(fs));
       }}
     >
       <header className="toolbar">
         <span className="logo">⬡ SysML v2 Viewer</span>
         <button onClick={newFile}>新規</button>
-        <button onClick={() => fileInputRef.current?.click()}>ファイルを開く…</button>
-        <button onClick={() => dirInputRef.current?.click()}>フォルダを開く…</button>
-        <button onClick={saveFile}>保存 (.sysml)</button>
+        <button onClick={openFiles}>ファイルを開く…</button>
+        <button onClick={openDirectory}>フォルダを開く…</button>
+        <button onClick={() => (sshSession ? disconnectSsh() : setSshDialogOpen(true))}>
+          {sshSession ? `SSH切断 (${sshSession.label})` : "リモート (SSH)…"}
+        </button>
+        <button onClick={saveActive} title="Ctrl+S">保存</button>
+        <button onClick={saveAll} title="Ctrl+Shift+S" disabled={!dirtyCount}>
+          全て保存{dirtyCount ? ` (${dirtyCount})` : ""}
+        </button>
         <select
           value=""
           onChange={(e) => {
@@ -341,8 +449,12 @@ export default function App() {
           accept=".sysml,.kerml,.txt"
           multiple
           style={{ display: "none" }}
-          onChange={(e) => {
-            addOrUpdateFiles([...(e.target.files ?? [])]);
+          onChange={async (e) => {
+            const list = [...(e.target.files ?? [])];
+            const loaded: LoadedFile[] = await Promise.all(
+              list.map(async (f) => ({ name: f.name, source: await f.text() }))
+            );
+            addLoadedFiles(loaded);
             e.target.value = "";
           }}
         />
@@ -352,9 +464,15 @@ export default function App() {
           // @ts-expect-error non-standard but widely supported
           webkitdirectory=""
           style={{ display: "none" }}
-          onChange={(e) => {
-            const fs = [...(e.target.files ?? [])].filter((f) => SYSML_EXT.test(f.name));
-            addOrUpdateFiles(fs, /*replace*/ true);
+          onChange={async (e) => {
+            const list = [...(e.target.files ?? [])].filter((f) => SYSML_EXT.test(f.name));
+            const loaded: LoadedFile[] = await Promise.all(
+              list.map(async (f) => ({
+                name: (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name,
+                source: await f.text(),
+              }))
+            );
+            addLoadedFiles(loaded, /*replace*/ true);
             e.target.value = "";
           }}
         />
@@ -410,21 +528,22 @@ export default function App() {
                   key={f.id}
                   className={"file-tab" + (f.id === activeFile?.id ? " active" : "")}
                   onClick={() => setActiveId(f.id)}
-                  title={f.name}
+                  title={f.remotePath ?? f.name}
                 >
+                  {f.remotePath && <span className="file-tab-remote">⇅</span>}
                   <span className="file-tab-name">
                     {f.name}
                     {errCount > 0 && <span className="file-tab-err"> ●</span>}
                   </span>
                   <span
-                    className="file-tab-close"
+                    className={"file-tab-close" + (f.dirty ? " dirty" : "")}
                     onClick={(e) => {
                       e.stopPropagation();
                       closeFile(f.id);
                     }}
-                    title="閉じる"
+                    title={f.dirty ? "未保存の変更あり – 閉じる" : "閉じる"}
                   >
-                    ×
+                    {f.dirty ? "●" : "×"}
                   </span>
                 </div>
               );
@@ -475,9 +594,16 @@ export default function App() {
 
       <footer className="statusbar">
         <span>SysML v2 textual notation (subset) — 複数ファイルの import を横断して可視化</span>
+        {sshSession && <span className="ssh-status">⇅ SSH: {sshSession.label}</span>}
         <span className="spacer" />
-        <span>ファイル / フォルダをドラッグ&ドロップで読み込み可能</span>
+        <span>ファイル / フォルダをドラッグ&ドロップで読み込み可能 — Ctrl+S で上書き保存</span>
       </footer>
+
+      {sshDialogOpen && (
+        <SshDialog onClose={() => setSshDialogOpen(false)} onLoaded={handleSshLoaded} />
+      )}
+
+      {toast && <div className="toast">{toast}</div>}
     </div>
   );
 }

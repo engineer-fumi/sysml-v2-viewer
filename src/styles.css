@@ -175,11 +175,20 @@ body,
   font-size: 9px;
 }
 
+.file-tab-remote {
+  color: #94e2d5;
+  font-size: 11px;
+}
+
 .file-tab-close {
   color: #6c7086;
   border-radius: 3px;
   padding: 0 4px;
   font-size: 13px;
+}
+
+.file-tab-close.dirty {
+  color: #f9e2af;
 }
 
 .file-tab-close:hover {
@@ -393,4 +402,152 @@ body,
 
 .statusbar .spacer {
   flex: 1;
+}
+
+.ssh-status {
+  color: #94e2d5;
+}
+
+/* ---- modal dialog ---- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: #00000088;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: #1e1e2e;
+  border: 1px solid #45475a;
+  border-radius: 10px;
+  padding: 20px 22px;
+  width: 480px;
+  max-width: 92vw;
+  max-height: 86vh;
+  overflow: auto;
+  box-shadow: 0 12px 40px #000000aa;
+}
+
+.modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #89b4fa;
+  margin-bottom: 16px;
+}
+
+.form-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.form-row label {
+  width: 86px;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  color: #a6adc8;
+  padding-top: 6px;
+}
+
+.form-row label.short {
+  width: auto;
+}
+
+.form-row input,
+.form-row select,
+.form-row textarea {
+  flex: 1;
+  background: #181825;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
+  border-radius: 5px;
+  padding: 6px 9px;
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.form-row textarea {
+  font-family: monospace;
+  resize: vertical;
+}
+
+.form-row input.port {
+  flex: 0 0 64px;
+}
+
+.modal-note {
+  font-size: 11.5px;
+  color: #7f849c;
+  margin: 12px 0;
+  line-height: 1.6;
+}
+
+.modal-note code {
+  color: #a6adc8;
+}
+
+.modal-status {
+  font-size: 12px;
+  color: #94e2d5;
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+
+.modal-error {
+  font-size: 12px;
+  color: #f38ba8;
+  background: #f38ba814;
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.modal-buttons button {
+  background: #313244;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
+  border-radius: 5px;
+  padding: 7px 16px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.modal-buttons button.primary {
+  background: #89b4fa;
+  border-color: #89b4fa;
+  color: #11111b;
+  font-weight: 600;
+}
+
+.modal-buttons button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---- toast ---- */
+.toast {
+  position: fixed;
+  bottom: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #313244;
+  border: 1px solid #585b70;
+  color: #cdd6f4;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 12.5px;
+  z-index: 200;
+  box-shadow: 0 6px 24px #000000aa;
+  max-width: 80vw;
 }
