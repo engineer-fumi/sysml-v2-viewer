@@ -18,7 +18,8 @@ export class Resolver {
 
   /** Resolve a (possibly dotted / qualified) reference from a scope. */
   resolve(scope: SysMLElement, path: string): SysMLElement | undefined {
-    const segments = path.split(/::|\./).filter(Boolean);
+    // conjugated references (~Port) resolve to the original type
+    const segments = path.replace(/^~/, "").split(/::|\./).filter(Boolean);
     if (!segments.length) return undefined;
     if (segments[0] === "*" || segments[0] === "**") return undefined;
 
@@ -105,7 +106,7 @@ export class Resolver {
     path: string,
     seen: Set<SysMLElement>
   ): SysMLElement | undefined {
-    const segments = path.split(/::|\./).filter(Boolean);
+    const segments = path.replace(/^~/, "").split(/::|\./).filter(Boolean);
     if (!segments.length) return undefined;
     let cur: SysMLElement | undefined;
     for (let s: SysMLElement | undefined = scope; s && !cur; s = s.parent) {

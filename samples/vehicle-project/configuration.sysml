@@ -1,14 +1,14 @@
 package VehicleConfiguration {
+    private import VehicleDefinitions::*;
+
     doc /* 車両の構成 (usage)。定義は definitions.sysml から import。 */
 
-    import VehicleDefinitions::*;
-
     part vehicle : Vehicle {
-        attribute mass = 1200.0;
+        attribute :>> mass = 1200.0;
 
         part engine : Engine;
         part fuelTank : FuelTank {
-            attribute capacity = 50.0;
+            attribute :>> capacity = 50.0;
         }
         part transmission : Transmission;
         part frontWheels : Wheel[2];

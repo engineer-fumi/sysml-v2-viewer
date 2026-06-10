@@ -1,4 +1,4 @@
-package Actions {
+package OrderProcessing {
     doc /* アクションフローのサンプル。 */
 
     item def Order;
@@ -9,16 +9,22 @@ package Actions {
         out item product : Product;
 
         action validate {
-            in item order = ProcessOrder::order;
+            in item order : Order;
+            out item checkedOrder : Order;
         }
-        action manufacture;
+        action manufacture {
+            in item order : Order;
+            out item product : Product;
+        }
         action ship {
-            out item product;
+            in item product : Product;
         }
 
         first validate then manufacture;
         first manufacture then ship;
 
-        flow of Order from validate to manufacture;
+        bind validate.order = order;
+        flow of Order from validate.checkedOrder to manufacture.order;
+        flow of Product from manufacture.product to ship.product;
     }
 }

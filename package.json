@@ -2,7 +2,7 @@
   "name": "sysml-v2-viewer",
   "displayName": "SysML v2 Viewer",
   "description": "SysML v2 (.sysml / .kerml) のオーサリングと可視化: シンタックスハイライト・補完・診断・アウトライン・定義ジャンプ・インターコネクション図",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "engineer-fumi",
   "license": "MIT",
   "repository": {
@@ -90,6 +90,18 @@
           "enum": ["error", "warning", "information", "off"],
           "default": "warning",
           "description": "型付け・特化の種類整合 (part は part def で型付け 等) の診断レベル"
+        },
+        "sysml.validation.shadowing": {
+          "type": "string",
+          "enum": ["error", "warning", "information", "off"],
+          "default": "warning",
+          "description": "継承メンバーを同名宣言で隠している場合 (:>> による再定義を推奨) の診断レベル"
+        },
+        "sysml.validation.importVisibility": {
+          "type": "string",
+          "enum": ["error", "warning", "information", "off"],
+          "default": "warning",
+          "description": "import の可視性 (public / private) が明示されていない場合の診断レベル"
         }
       }
     }

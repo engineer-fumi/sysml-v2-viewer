@@ -1,7 +1,7 @@
 package VehicleDefinitions {
-    doc /* 車両の定義ライブラリ。型 (def) のみを置くファイル。 */
+    private import ScalarValues::*;
 
-    import ScalarValues::*;
+    doc /* 車両の定義ライブラリ。型 (def) のみを置くファイル。 */
 
     attribute def Torque;
     attribute def FuelLevel;
@@ -23,7 +23,7 @@ package VehicleDefinitions {
     }
 
     part def Engine {
-        port fuelIn : FuelPort;
+        port fuelIn : ~FuelPort;
         port drive : DrivePort;
         attribute peakTorque : Torque;
     }
@@ -35,7 +35,7 @@ package VehicleDefinitions {
     }
 
     part def Transmission {
-        port driveIn : DrivePort;
+        port driveIn : ~DrivePort;
         port driveOut : DrivePort;
     }
 

@@ -1,9 +1,9 @@
 package VehicleRequirements {
-    doc /* 車両要求。構成・定義を別ファイルから import して参照する。 */
+    private import ScalarValues::*;
+    private import VehicleDefinitions::*;
+    private import VehicleConfiguration::*;
 
-    import ScalarValues::*;
-    import VehicleDefinitions::*;
-    import VehicleConfiguration::*;
+    doc /* 車両要求。構成・定義を別ファイルから import して参照する。 */
 
     requirement def MassLimit {
         doc /* 車両総質量は 1500kg 以下であること。 */

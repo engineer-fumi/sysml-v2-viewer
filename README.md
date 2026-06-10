@@ -12,10 +12,14 @@ SysML v2(`.sysml` / `.kerml`)のオーサリングと可視化を行う VS Code 
 - シンタックスハイライト(TextMate 文法)
 - リアルタイム構文診断(「問題」パネル・波線表示)
 - **意味検証**(SysIDE 相当の診断層):
-  - 未解決参照(型・特化・再定義・connect / flow の端・遷移先・メタデータ等)
-  - 同一スコープ内の重複名
+  - 未解決参照(型・特化・再定義・connect / flow の端・遷移先・accept のシグナル・メタデータ等)
+  - 重複名(同一スコープ内、およびトップレベル要素のグローバル衝突)
   - 型付け / 特化の種類整合(part は part def で型付けする 等)
-  - スコープ・import(非推移)・型/特化の継承メンバーを考慮した名前解決
+  - 継承メンバーの隠蔽検出(`:>>` による再定義を提案)
+  - import の可視性 (public / private) 明示チェック
+  - flow の端の dot 記法チェック
+  - スコープ・import(非推移)・型/特化の継承メンバー・共役型 (`~Port`) を
+    考慮した名前解決
   - 診断レベルは設定 `sysml.validation.*` で error / warning / off に変更可能
 - **標準ライブラリの最小サブセットを同梱**: `ScalarValues`(Real 等)/ `ISQ` /
   `SI` / 基本 def 群が import で解決し、F12 で同梱ライブラリへジャンプ可能
@@ -53,7 +57,7 @@ SysML v2(`.sysml` / `.kerml`)のオーサリングと可視化を行う VS Code 
 ```bash
 npm install
 npm run package        # sysml-v2-viewer-<version>.vsix を生成
-code --install-extension sysml-v2-viewer-0.3.0.vsix
+code --install-extension sysml-v2-viewer-0.3.1.vsix
 ```
 
 開発時は VS Code でこのリポジトリを開いて F5(`samples/` を開いた

@@ -49,47 +49,81 @@ export function registerDiagnostics(
 
   const runAll = () => {
     const cfg = vscode.workspace.getConfiguration("sysml.validation");
-    const sevUnresolved = severityOf(cfg.get<SeveritySetting>("unresolvedReferences", "warning"));
-    const sevDuplicate = severityOf(cfg.get<SeveritySetting>("duplicateNames", "error"));
-    const sevConformance = severityOf(cfg.get<SeveritySetting>("typeConformance", "warning"));
     const sevByRule: Record<SemanticRule, vscode.DiagnosticSeverity | undefined> = {
-      unresolved: sevUnresolved,
-      duplicate: sevDuplicate,
-      conformance: sevConformance,
+      unresolved: severityOf(cfg.get<SeveritySetting>("unresolvedReferences", "warning")),
+      duplicate: severityOf(cfg.get<SeveritySetting>("duplicateNames", "error")),
+      conformance: severityOf(cfg.get<SeveritySetting>("typeConformance", "warning")),
+      shadowing: severityOf(cfg.get<SeveritySetting>("shadowing", "warning")),
+      importVisibility: severityOf(cfg.get<SeveritySetting>("importVisibility", "warning")),
     };
 
     const resolver = new Resolver(index.combinedRoot(/*includeBuiltin*/ true));
+
+    // global scope: top-level names per file (incl. the bundled library)
+    const topLevelOwners = new Map<string, string[]>();
+    for (const f of index.all(true)) {
+      for (const c of f.result.root.children) {
+        if (!c.name) continue;
+        const owners = topLevelOwners.get(c.name) ?? [];
+        owners.push(f.builtin ? "標準ライブラリ" : f.name);
+        topLevelOwners.set(c.name, owners);
+      }
+    }
 
     for (const file of index.all(false)) {
       const lines = new LineMap(file.source);
       const diagnostics: vscode.Diagnostic[] = [];
 
-      for (const e of file.result.errors) {
+      const push = (
+        start: number,
+        end: number,
+        message: string,
+        severity: vscode.DiagnosticSeverity,
+        code?: string
+      ) => {
         const d = new vscode.Diagnostic(
-          new vscode.Range(lines.positionAt(e.start), lines.positionAt(e.end)),
-          e.message,
-          vscode.DiagnosticSeverity.Error
+          new vscode.Range(lines.positionAt(start), lines.positionAt(end)),
+          message,
+          severity
         );
         d.source = "sysml";
+        if (code) d.code = code;
         diagnostics.push(d);
+      };
+
+      for (const e of file.result.errors) {
+        push(e.start, e.end, e.message, vscode.DiagnosticSeverity.Error);
       }
 
       const semantic = validateFile(file.result.root, resolver, {
-        unresolved: !!sevUnresolved,
-        duplicates: !!sevDuplicate,
-        conformance: !!sevConformance,
+        unresolved: !!sevByRule.unresolved,
+        duplicates: !!sevByRule.duplicate,
+        conformance: !!sevByRule.conformance,
+        shadowing: !!sevByRule.shadowing,
+        importVisibility: !!sevByRule.importVisibility,
       });
       for (const s of semantic) {
         const severity = sevByRule[s.rule];
         if (severity === undefined) continue;
-        const d = new vscode.Diagnostic(
-          new vscode.Range(lines.positionAt(s.start), lines.positionAt(s.end)),
-          s.message,
-          severity
-        );
-        d.source = "sysml";
-        d.code = s.rule;
-        diagnostics.push(d);
+        push(s.start, s.end, s.message, severity, s.rule);
+      }
+
+      // top-level names shadowing the global scope (other files / stdlib)
+      if (sevByRule.duplicate !== undefined) {
+        for (const c of file.result.root.children) {
+          if (!c.name || c.nameStart === undefined) continue;
+          const owners = topLevelOwners.get(c.name) ?? [];
+          if (owners.length > 1) {
+            const others = owners.filter((o) => o !== file.name);
+            push(
+              c.nameStart,
+              c.nameEnd ?? c.nameStart + c.name.length,
+              `トップレベル要素 '${c.name}' はグローバルスコープで衝突しています (${[...new Set(others)].join(", ")})`,
+              sevByRule.duplicate,
+              "duplicate"
+            );
+          }
+        }
       }
 
       collection.set(file.uri, diagnostics);

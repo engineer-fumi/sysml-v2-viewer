@@ -1,7 +1,12 @@
 import { SysMLElement, walk } from "./ast";
 import { Resolver } from "./resolve";
 
-export type SemanticRule = "unresolved" | "duplicate" | "conformance";
+export type SemanticRule =
+  | "unresolved"
+  | "duplicate"
+  | "conformance"
+  | "shadowing"
+  | "importVisibility";
 
 export interface SemanticDiagnostic {
   message: string;
@@ -86,18 +91,62 @@ export interface ValidateOptions {
   unresolved: boolean;
   duplicates: boolean;
   conformance: boolean;
+  shadowing: boolean;
+  importVisibility: boolean;
 }
+
+const DEFAULT_OPTIONS: ValidateOptions = {
+  unresolved: true,
+  duplicates: true,
+  conformance: true,
+  shadowing: true,
+  importVisibility: true,
+};
+
+/** feature-like kinds that can shadow / redefine inherited members */
+const FEATURE_KINDS = new Set([
+  "part", "attribute", "port", "item", "action", "state", "requirement",
+  "constraint", "calc", "enum", "ref", "occurrence",
+]);
 
 export function validateFile(
   fileRoot: SysMLElement,
   resolver: Resolver,
-  options: ValidateOptions = { unresolved: true, duplicates: true, conformance: true }
+  options: ValidateOptions = DEFAULT_OPTIONS
 ): SemanticDiagnostic[] {
   const out: SemanticDiagnostic[] = [];
 
   walk(fileRoot, (el) => {
     if (el === fileRoot) return;
     const scope = el.parent ?? fileRoot;
+
+    // ---- imports should declare explicit visibility (SysIDE 互換) ----
+    if (
+      options.importVisibility &&
+      el.kind === "import" &&
+      !el.modifiers.some((m) => m === "public" || m === "private" || m === "protected")
+    ) {
+      out.push({
+        rule: "importVisibility",
+        message: "import には可視性 (public / private) を明示してください",
+        start: el.start,
+        end: el.end,
+      });
+    }
+
+    // ---- flow ends should use dot notation (端は要素内のフィーチャ) ----
+    if (options.conformance && el.kind === "flow" && el.ends) {
+      for (const ref of el.refs) {
+        if (ref.kind === "end" && !ref.name.includes(".") && !ref.name.includes("::")) {
+          out.push({
+            rule: "conformance",
+            message: `フローの端 '${ref.name}' は dot 記法で要素内のフィーチャを指定してください (例: ${ref.name}.item)`,
+            start: ref.start,
+            end: ref.end,
+          });
+        }
+      }
+    }
 
     // ---- reference resolution + typing conformance ----
     for (const ref of el.refs) {
@@ -148,6 +197,37 @@ export function validateFile(
             start: ref.start,
             end: ref.end,
           });
+        }
+      }
+    }
+
+    // ---- declarations shadowing inherited members ----
+    if (
+      options.shadowing &&
+      (el.typedBy.length > 0 || el.specializes.length > 0) &&
+      el.children.length > 0
+    ) {
+      for (const c of el.children) {
+        if (!c.name || c.nameStart === undefined) continue;
+        if (!FEATURE_KINDS.has(c.kind)) continue;
+        // redefining / subsetting children are explicitly related – fine
+        if (c.redefines.length || c.specializes.length) continue;
+        // subject / objective / actor ... implicitly redefine per the spec
+        if (c.modifiers.some((m) =>
+          m === "subject" || m === "objective" || m === "actor" ||
+          m === "stakeholder" || m === "frame"
+        )) continue;
+        for (const g of resolver.generalsOf(el, new Set([el]))) {
+          const inherited = resolver.lookupMember(g, c.name, new Set([el]));
+          if (inherited && inherited !== c) {
+            out.push({
+              rule: "shadowing",
+              message: `'${c.name}' は継承メンバーを隠しています — 再定義するには ':>> ${c.name}' を使ってください`,
+              start: c.nameStart,
+              end: c.nameEnd ?? c.nameStart + c.name.length,
+            });
+            break;
+          }
         }
       }
     }

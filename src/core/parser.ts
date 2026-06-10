@@ -553,7 +553,23 @@ class Parser {
       el.transition.source = this.qnameRef(el, "end", false, true);
     }
     if (this.eat("accept")) {
-      el.transition.trigger = this.captureUntil(["if", "then", ";", "{"]);
+      // `accept sig : Signal` declares a payload typed Signal;
+      // `accept Signal` references the signal type directly
+      const trigStart = this.peek().start;
+      if (this.atIdentifier()) {
+        const nameTok = this.peek();
+        const name = this.parseQualifiedName(false, true);
+        if (this.eat(":")) {
+          this.qnameRef(el, "type", false, true);
+        } else {
+          el.refs.push({ kind: "target", name, start: nameTok.start, end: this.qnameEnd });
+        }
+        // optional `via port`
+        if (this.eat("via")) this.qnameRef(el, "end", false, true);
+        el.transition.trigger = this.src.slice(trigStart, this.prevEnd()).trim();
+      } else {
+        el.transition.trigger = this.captureUntil(["if", "then", ";", "{"]);
+      }
     }
     if (this.eat("if")) {
       el.transition.guard = this.captureUntil(["then", ";", "{"]);
@@ -735,6 +751,12 @@ class Parser {
 
   /** A::B::C  (optionally ending with ::* for imports, optionally with dots) */
   private parseQualifiedName(allowStar = false, allowDots = false): string {
+    // conjugated type reference: ~PortType
+    let prefix = "";
+    if (this.at("~")) {
+      this.next();
+      prefix = "~";
+    }
     const parts: string[] = [];
     if (!this.atIdentifier()) {
       const t = this.peek();
@@ -766,7 +788,7 @@ class Parser {
       break;
     }
     this.qnameEnd = this.prevEnd();
-    return parts.join("::").replace(/::\./g, ".");
+    return prefix + parts.join("::").replace(/::\./g, ".");
   }
 
   /** Parse a qualified name and record it as a reference on the element. */
