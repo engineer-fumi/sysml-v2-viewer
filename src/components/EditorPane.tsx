@@ -67,6 +67,8 @@ export interface EditorSelection {
 }
 
 interface Props {
+  /** id of the file being edited – switching ids swaps editor state */
+  fileId: number;
   value: string;
   onChange: (value: string) => void;
   errors: ParseError[];
@@ -77,21 +79,22 @@ interface Props {
   onCursor?: (offset: number) => void;
 }
 
-export function EditorPane({ value, onChange, errors, names, select, onCursor }: Props) {
+export function EditorPane({ fileId, value, onChange, errors, names, select, onCursor }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const namesRef = useRef<string[]>(names);
   const onChangeRef = useRef(onChange);
   const onCursorRef = useRef(onCursor);
+  /** per-file editor states preserving undo history / cursor / scroll */
+  const statesRef = useRef(new Map<number, EditorState>());
+  const fileIdRef = useRef(fileId);
   namesRef.current = names;
   onChangeRef.current = onChange;
   onCursorRef.current = onCursor;
 
-  // create the editor once
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const state = EditorState.create({
-      doc: value,
+  const makeState = (doc: string) =>
+    EditorState.create({
+      doc,
       extensions: [
         lineNumbers(),
         highlightActiveLineGutter(),
@@ -127,7 +130,11 @@ export function EditorPane({ value, onChange, errors, names, select, onCursor }:
         }),
       ],
     });
-    const view = new EditorView({ state, parent: containerRef.current });
+
+  // create the editor once
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const view = new EditorView({ state: makeState(value), parent: containerRef.current });
     viewRef.current = view;
     return () => {
       view.destroy();
@@ -136,15 +143,29 @@ export function EditorPane({ value, onChange, errors, names, select, onCursor }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // external value changes (file open / sample load)
+  // file switches and external value changes
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
+    if (fileId !== fileIdRef.current) {
+      // park the old file's state, restore (or create) the new one
+      statesRef.current.set(fileIdRef.current, view.state);
+      fileIdRef.current = fileId;
+      const saved = statesRef.current.get(fileId);
+      if (saved && saved.doc.toString() === value) {
+        view.setState(saved);
+      } else {
+        view.setState(makeState(value));
+      }
+      return;
+    }
     const current = view.state.doc.toString();
     if (current !== value) {
-      view.dispatch({ changes: { from: 0, to: current.length, insert: value } });
+      // external replacement (sample load etc.) – reset history too
+      view.setState(makeState(value));
     }
-  }, [value]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileId, value]);
 
   // diagnostics
   useEffect(() => {

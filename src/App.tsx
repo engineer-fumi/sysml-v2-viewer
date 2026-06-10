@@ -3,8 +3,14 @@ import { DiagramView } from "./components/DiagramView";
 import { EditorPane, EditorSelection } from "./components/EditorPane";
 import { OutlineTree } from "./components/OutlineTree";
 import { parseSysML } from "./sysml/parser";
-import { SysMLElement, qualifiedName, walk } from "./sysml/ast";
-import { DEFAULT_SOURCE, SAMPLES } from "./samples";
+import { ParseError, SysMLElement, createElement, qualifiedName, walk } from "./sysml/ast";
+import { DEFAULT_SAMPLE, SAMPLES, Sample } from "./samples";
+
+interface WorkFile {
+  id: number;
+  name: string;
+  source: string;
+}
 
 function offsetToLineCol(src: string, offset: number): { line: number; col: number } {
   let line = 1;
@@ -49,14 +55,62 @@ function diagramRootCandidates(root: SysMLElement): SysMLElement[] {
   return out;
 }
 
+const SYSML_EXT = /\.(sysml|kerml)$/i;
+
+/** Recursively collect .sysml files from a drag&drop item list. */
+async function collectDroppedFiles(dt: DataTransfer): Promise<File[]> {
+  const out: File[] = [];
+
+  const readEntries = (reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> =>
+    new Promise((resolve) => reader.readEntries(resolve, () => resolve([])));
+
+  const fileOf = (entry: FileSystemFileEntry): Promise<File | null> =>
+    new Promise((resolve) => entry.file(resolve, () => resolve(null)));
+
+  const visit = async (entry: FileSystemEntry): Promise<void> => {
+    if (entry.isFile) {
+      if (SYSML_EXT.test(entry.name)) {
+        const f = await fileOf(entry as FileSystemFileEntry);
+        if (f) out.push(f);
+      }
+    } else if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader();
+      for (;;) {
+        const batch = await readEntries(reader);
+        if (!batch.length) break;
+        for (const e of batch) await visit(e);
+      }
+    }
+  };
+
+  const entries = [...dt.items]
+    .map((item) => item.webkitGetAsEntry?.())
+    .filter((e): e is FileSystemEntry => !!e);
+
+  if (entries.length) {
+    for (const e of entries) await visit(e);
+  } else {
+    for (const f of [...dt.files]) {
+      if (SYSML_EXT.test(f.name)) out.push(f);
+    }
+  }
+  return out;
+}
+
+let nextFileId = 1;
+function sampleToFiles(sample: Sample): WorkFile[] {
+  return sample.files.map((f) => ({ id: nextFileId++, name: f.name, source: f.source }));
+}
+
 export default function App() {
-  const [source, setSource] = useState(DEFAULT_SOURCE);
-  const [fileName, setFileName] = useState("Vehicle.sysml");
+  const [files, setFiles] = useState<WorkFile[]>(() => sampleToFiles(DEFAULT_SAMPLE));
+  const [activeId, setActiveId] = useState<number>(() => files[0]?.id ?? 0);
   const [selected, setSelected] = useState<SysMLElement | undefined>(undefined);
   const [editorSelect, setEditorSelect] = useState<EditorSelection | undefined>(undefined);
-  const [diagramRootName, setDiagramRootName] = useState<string>("");
+  const [diagramRootKey, setDiagramRootKey] = useState<string>("");
   const selectSeq = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dirInputRef = useRef<HTMLInputElement>(null);
 
   // ---- resizable panes ----
   const DEFAULT_SIDEBAR_W = 290;
@@ -98,28 +152,65 @@ export default function App() {
     };
   }, [dragging, sidebarW]);
 
-  const parsed = useMemo(() => parseSysML(source), [source]);
+  // ---- parsing: each file separately, combined into one model ----
+  const parsedFiles = useMemo(
+    () => files.map((f) => ({ file: f, result: parseSysML(f.source) })),
+    [files]
+  );
+
+  const combinedRoot = useMemo(() => {
+    const root = createElement("namespace");
+    for (const pf of parsedFiles) {
+      const fileEl = pf.result.root;
+      fileEl.kind = "file";
+      fileEl.name = pf.file.name;
+      fileEl.parent = root;
+      walk(fileEl, (el) => {
+        el.fileId = pf.file.id;
+      });
+      root.children.push(fileEl);
+    }
+    return root;
+  }, [parsedFiles]);
+
+  const activeFile = files.find((f) => f.id === activeId) ?? files[0];
+  const activeParsed = parsedFiles.find((pf) => pf.file.id === activeFile?.id);
+
+  const allErrors = useMemo(() => {
+    const out: { file: WorkFile; error: ParseError }[] = [];
+    for (const pf of parsedFiles) {
+      for (const error of pf.result.errors) out.push({ file: pf.file, error });
+    }
+    return out;
+  }, [parsedFiles]);
 
   const names = useMemo(() => {
     const set = new Set<string>();
-    walk(parsed.root, (el) => {
-      if (el.name) set.add(el.name);
+    walk(combinedRoot, (el) => {
+      if (el.name && el.kind !== "file") set.add(el.name);
     });
     return [...set];
-  }, [parsed]);
+  }, [combinedRoot]);
 
-  const rootCandidates = useMemo(() => diagramRootCandidates(parsed.root), [parsed]);
+  const rootCandidates = useMemo(() => diagramRootCandidates(combinedRoot), [combinedRoot]);
+  const candidateKey = (el: SysMLElement) => `${el.fileId}:${qualifiedName(el)}`;
 
   const diagramRoot = useMemo(() => {
-    if (diagramRootName) {
-      const found = rootCandidates.find((el) => qualifiedName(el) === diagramRootName);
+    if (diagramRootKey) {
+      const found = rootCandidates.find((el) => candidateKey(el) === diagramRootKey);
       if (found) return found;
     }
-    return parsed.root;
-  }, [parsed, rootCandidates, diagramRootName]);
+    return combinedRoot;
+  }, [combinedRoot, rootCandidates, diagramRootKey]);
 
+  // ---- selection ----
   const handleSelect = useCallback((el: SysMLElement) => {
     setSelected(el);
+    if (el.kind === "file") {
+      if (el.fileId !== undefined) setActiveId(el.fileId);
+      return;
+    }
+    if (el.fileId !== undefined) setActiveId(el.fileId);
     const start = el.nameStart ?? el.start;
     const end = el.nameEnd ?? Math.min(el.end, el.start + 1);
     selectSeq.current++;
@@ -128,44 +219,89 @@ export default function App() {
 
   const handleCursor = useCallback(
     (offset: number) => {
-      setSelected(elementAt(parsed.root, offset));
+      const fileRoot = activeParsed?.result.root;
+      if (fileRoot) setSelected(elementAt(fileRoot, offset));
     },
-    [parsed]
+    [activeParsed]
   );
 
-  const openFile = (file: File) => {
-    file.text().then((text) => {
-      setSource(text);
-      setFileName(file.name);
-      setSelected(undefined);
-      setDiagramRootName("");
-    });
+  const handleChange = useCallback(
+    (value: string) => {
+      setFiles((fs) =>
+        fs.map((f) => (f.id === activeId && f.source !== value ? { ...f, source: value } : f))
+      );
+    },
+    [activeId]
+  );
+
+  // ---- workspace operations ----
+  const filesRef = useRef(files);
+  filesRef.current = files;
+
+  const addOrUpdateFiles = useCallback(async (incoming: File[], replace = false) => {
+    if (!incoming.length) return;
+    const loaded = await Promise.all(
+      incoming.map(async (f) => ({ name: f.name, source: await f.text() }))
+    );
+    const base = replace ? [] : filesRef.current.map((f) => ({ ...f }));
+    for (const l of loaded) {
+      const existing = base.find((f) => f.name === l.name);
+      if (existing) existing.source = l.source;
+      else base.push({ id: nextFileId++, name: l.name, source: l.source });
+    }
+    if (!base.length) return;
+    setFiles(base);
+    setActiveId(base[base.length - 1].id);
+    setSelected(undefined);
+    setDiagramRootKey("");
+  }, []);
+
+  const newFile = () => {
+    const n = files.filter((f) => f.name.startsWith("untitled")).length + 1;
+    const file: WorkFile = {
+      id: nextFileId++,
+      name: `untitled-${n}.sysml`,
+      source: "package NewModel {\n    \n}\n",
+    };
+    setFiles((fs) => [...fs, file]);
+    setActiveId(file.id);
+  };
+
+  const closeFile = (id: number) => {
+    const fs = filesRef.current;
+    const idx = fs.findIndex((f) => f.id === id);
+    let next = fs.filter((f) => f.id !== id);
+    if (!next.length) {
+      next = [{ id: nextFileId++, name: "untitled-1.sysml", source: "" }];
+    }
+    setFiles(next);
+    if (!next.some((f) => f.id === activeId)) {
+      setActiveId(next[Math.min(Math.max(0, idx - 1), next.length - 1)].id);
+    }
+    setSelected(undefined);
   };
 
   const saveFile = () => {
-    const blob = new Blob([source], { type: "text/plain;charset=utf-8" });
+    if (!activeFile) return;
+    const blob = new Blob([activeFile.source], { type: "text/plain;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = fileName || "model.sysml";
+    a.download = activeFile.name;
     a.click();
     URL.revokeObjectURL(a.href);
-  };
-
-  const newFile = () => {
-    setSource("package NewModel {\n    \n}\n");
-    setFileName("NewModel.sysml");
-    setSelected(undefined);
-    setDiagramRootName("");
   };
 
   const loadSample = (idx: number) => {
     const s = SAMPLES[idx];
     if (!s) return;
-    setSource(s.source);
-    setFileName(s.name.split(" ")[0] + ".sysml");
+    const fs = sampleToFiles(s);
+    setFiles(fs);
+    setActiveId(fs[0].id);
     setSelected(undefined);
-    setDiagramRootName("");
+    setDiagramRootKey("");
   };
+
+  const activeErrors = activeParsed?.result.errors ?? [];
 
   return (
     <div
@@ -173,14 +309,14 @@ export default function App() {
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
-        const f = e.dataTransfer.files[0];
-        if (f) openFile(f);
+        collectDroppedFiles(e.dataTransfer).then((fs) => addOrUpdateFiles(fs));
       }}
     >
       <header className="toolbar">
         <span className="logo">⬡ SysML v2 Viewer</span>
         <button onClick={newFile}>新規</button>
-        <button onClick={() => fileInputRef.current?.click()}>開く…</button>
+        <button onClick={() => fileInputRef.current?.click()}>ファイルを開く…</button>
+        <button onClick={() => dirInputRef.current?.click()}>フォルダを開く…</button>
         <button onClick={saveFile}>保存 (.sysml)</button>
         <select
           value=""
@@ -195,18 +331,30 @@ export default function App() {
             </option>
           ))}
         </select>
-        <span className="file-name">{fileName}</span>
-        <span className={"parse-status" + (parsed.errors.length ? " has-errors" : "")}>
-          {parsed.errors.length ? `⚠ ${parsed.errors.length} 件のエラー` : "✓ 構文OK"}
+        <span className="file-name">{files.length} ファイル</span>
+        <span className={"parse-status" + (allErrors.length ? " has-errors" : "")}>
+          {allErrors.length ? `⚠ ${allErrors.length} 件のエラー` : "✓ 構文OK"}
         </span>
         <input
           ref={fileInputRef}
           type="file"
           accept=".sysml,.kerml,.txt"
+          multiple
           style={{ display: "none" }}
           onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) openFile(f);
+            addOrUpdateFiles([...(e.target.files ?? [])]);
+            e.target.value = "";
+          }}
+        />
+        <input
+          ref={dirInputRef}
+          type="file"
+          // @ts-expect-error non-standard but widely supported
+          webkitdirectory=""
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const fs = [...(e.target.files ?? [])].filter((f) => SYSML_EXT.test(f.name));
+            addOrUpdateFiles(fs, /*replace*/ true);
             e.target.value = "";
           }}
         />
@@ -216,24 +364,28 @@ export default function App() {
         <aside className="sidebar" style={{ width: sidebarW }}>
           <div className="panel-title">モデルツリー</div>
           <div className="sidebar-tree">
-            <OutlineTree root={parsed.root} selected={selected} onSelect={handleSelect} />
+            <OutlineTree root={combinedRoot} selected={selected} onSelect={handleSelect} />
           </div>
-          {parsed.errors.length > 0 && (
+          {allErrors.length > 0 && (
             <div className="error-panel">
-              <div className="panel-title">問題 ({parsed.errors.length})</div>
+              <div className="panel-title">問題 ({allErrors.length})</div>
               <div className="error-list">
-                {parsed.errors.slice(0, 50).map((err, i) => {
-                  const { line, col } = offsetToLineCol(source, err.start);
+                {allErrors.slice(0, 50).map(({ file, error }, i) => {
+                  const { line, col } = offsetToLineCol(file.source, error.start);
                   return (
                     <div
                       key={i}
                       className="error-row"
                       onClick={() => {
+                        setActiveId(file.id);
                         selectSeq.current++;
-                        setEditorSelect({ start: err.start, end: err.end, seq: selectSeq.current });
+                        setEditorSelect({ start: error.start, end: error.end, seq: selectSeq.current });
                       }}
                     >
-                      <span className="error-pos">{line}:{col}</span> {err.message}
+                      <span className="error-pos">
+                        {file.name} {line}:{col}
+                      </span>{" "}
+                      {error.message}
                     </div>
                   );
                 })}
@@ -250,17 +402,48 @@ export default function App() {
         />
 
         <section className="editor-section" style={{ width: editorW }}>
-          <div className="panel-title">
-            テキスト (Authoring)
+          <div className="file-tabs">
+            {files.map((f) => {
+              const errCount = parsedFiles.find((pf) => pf.file.id === f.id)?.result.errors.length ?? 0;
+              return (
+                <div
+                  key={f.id}
+                  className={"file-tab" + (f.id === activeFile?.id ? " active" : "")}
+                  onClick={() => setActiveId(f.id)}
+                  title={f.name}
+                >
+                  <span className="file-tab-name">
+                    {f.name}
+                    {errCount > 0 && <span className="file-tab-err"> ●</span>}
+                  </span>
+                  <span
+                    className="file-tab-close"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeFile(f.id);
+                    }}
+                    title="閉じる"
+                  >
+                    ×
+                  </span>
+                </div>
+              );
+            })}
+            <button className="file-tab-new" onClick={newFile} title="新規ファイル">
+              +
+            </button>
           </div>
-          <EditorPane
-            value={source}
-            onChange={setSource}
-            errors={parsed.errors}
-            names={names}
-            select={editorSelect}
-            onCursor={handleCursor}
-          />
+          {activeFile && (
+            <EditorPane
+              fileId={activeFile.id}
+              value={activeFile.source}
+              onChange={handleChange}
+              errors={activeErrors}
+              names={names}
+              select={editorSelect}
+              onCursor={handleCursor}
+            />
+          )}
         </section>
 
         <div
@@ -275,13 +458,13 @@ export default function App() {
             ダイアグラム (Visualization)
             <select
               className="root-select"
-              value={diagramRoot === parsed.root ? "" : qualifiedName(diagramRoot)}
-              onChange={(e) => setDiagramRootName(e.target.value)}
+              value={diagramRoot === combinedRoot ? "" : candidateKey(diagramRoot)}
+              onChange={(e) => setDiagramRootKey(e.target.value)}
             >
-              <option value="">モデル全体</option>
+              <option value="">モデル全体 (全ファイル)</option>
               {rootCandidates.map((el, i) => (
-                <option key={i} value={qualifiedName(el)}>
-                  {" ".repeat(0)}{qualifiedName(el)} ({el.kind})
+                <option key={i} value={candidateKey(el)}>
+                  {qualifiedName(el)} ({el.kind})
                 </option>
               ))}
             </select>
@@ -291,9 +474,9 @@ export default function App() {
       </div>
 
       <footer className="statusbar">
-        <span>SysML v2 textual notation (subset) — packages, parts, ports, connections, flows, states, requirements</span>
+        <span>SysML v2 textual notation (subset) — 複数ファイルの import を横断して可視化</span>
         <span className="spacer" />
-        <span>ファイルをドラッグ&ドロップで読み込み可能</span>
+        <span>ファイル / フォルダをドラッグ&ドロップで読み込み可能</span>
       </footer>
     </div>
   );

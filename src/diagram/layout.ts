@@ -322,10 +322,16 @@ export function layoutDiagram(root: SysMLElement): DiagramLayout {
   const boxByEl = new Map<SysMLElement, DiagramNode>();
 
   // top-level children of the chosen root become root boxes
+  // (file nodes are transparent: their contents are rendered directly)
   const rels: RelNode[] = [];
-  for (const c of root.children) {
-    if (shouldRenderAsBox(c)) rels.push(measure(c, 0));
-  }
+  const addTop = (el: SysMLElement) => {
+    if (el.kind === "file") {
+      el.children.forEach(addTop);
+    } else if (shouldRenderAsBox(el)) {
+      rels.push(measure(el, 0));
+    }
+  };
+  root.children.forEach(addTop);
   // if the root itself is a box-ish element with no box children at top level,
   // render the root itself
   if (!rels.length && shouldRenderAsBox(root)) {

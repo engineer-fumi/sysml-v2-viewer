@@ -8,6 +8,7 @@ interface Props {
 }
 
 const KIND_ICONS: Record<string, { glyph: string; color: string }> = {
+  file: { glyph: "▤", color: "#89b4fa" },
   package: { glyph: "P", color: "#f9e2af" },
   "library package": { glyph: "P", color: "#f9e2af" },
   namespace: { glyph: "N", color: "#f9e2af" },

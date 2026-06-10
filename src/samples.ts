@@ -1,15 +1,20 @@
-export interface Sample {
+export interface SampleFile {
   name: string;
   source: string;
 }
 
-const vehicle = `package VehicleModel {
-    doc /* 簡単な車両アーキテクチャのサンプルモデル。
-         * part 定義・使用、port、connection、flow を含む。 */
+export interface Sample {
+  name: string;
+  files: SampleFile[];
+}
+
+// ---- 複数ファイル構成のサンプルプロジェクト --------------------------
+
+const vehicleDefinitions = `package VehicleDefinitions {
+    doc /* 車両の定義ライブラリ。型 (def) のみを置くファイル。 */
 
     import ScalarValues::*;
 
-    // ---- 定義 (Definitions) ----
     attribute def Torque;
     attribute def FuelLevel;
 
@@ -49,14 +54,18 @@ const vehicle = `package VehicleModel {
     part def Wheel {
         attribute diameter : Real;
     }
+}
+`;
 
-    // ---- 構成 (Usage / Interconnection) ----
+const vehicleConfiguration = `package VehicleConfiguration {
+    doc /* 車両の構成 (usage)。定義は definitions.sysml から import。 */
+
+    import VehicleDefinitions::*;
+
     part vehicle : Vehicle {
         attribute mass = 1200.0;
 
-        part engine : Engine {
-            attribute peakTorque;
-        }
+        part engine : Engine;
         part fuelTank : FuelTank {
             attribute capacity = 50.0;
         }
@@ -64,16 +73,21 @@ const vehicle = `package VehicleModel {
         part frontWheels : Wheel[2];
         part rearWheels : Wheel[2];
 
-        // 接続
         connect fuelTank.fuelOut to engine.fuelIn;
         connect engine.drive to transmission.driveIn;
         connection driveShaft connect transmission.driveOut to rearWheels;
 
-        // フロー
         flow of Fuel from fuelTank.fuelOut.fuel to engine.fuelIn.fuel;
     }
+}
+`;
 
-    // ---- 要求 (Requirements) ----
+const vehicleRequirements = `package VehicleRequirements {
+    doc /* 車両要求。構成・定義を別ファイルから import して参照する。 */
+
+    import VehicleDefinitions::*;
+    import VehicleConfiguration::*;
+
     requirement def MassLimit {
         doc /* 車両総質量は 1500kg 以下であること。 */
         attribute massLimit : Real = 1500.0;
@@ -81,11 +95,23 @@ const vehicle = `package VehicleModel {
         require constraint { vehicle.mass <= massLimit }
     }
 
+    requirement def FuelCapacity {
+        doc /* 燃料タンク容量は 45L 以上であること。 */
+        subject tank : FuelTank;
+        require constraint { tank.capacity >= 45.0 }
+    }
+
     requirement vehicleMassRequirement : MassLimit {
         subject vehicle;
     }
+
+    requirement fuelCapacityRequirement : FuelCapacity {
+        subject fuelTank;
+    }
 }
 `;
+
+// ---- 単一ファイルのサンプル ------------------------------------------
 
 const stateMachine = `package CoffeeMachine {
     doc /* コーヒーメーカーの状態機械サンプル。 */
@@ -140,9 +166,22 @@ const actions = `package Actions {
 `;
 
 export const SAMPLES: Sample[] = [
-  { name: "Vehicle (車両構成)", source: vehicle },
-  { name: "CoffeeMachine (状態機械)", source: stateMachine },
-  { name: "Actions (アクション)", source: actions },
+  {
+    name: "Vehicle Project (複数ファイル)",
+    files: [
+      { name: "definitions.sysml", source: vehicleDefinitions },
+      { name: "configuration.sysml", source: vehicleConfiguration },
+      { name: "requirements.sysml", source: vehicleRequirements },
+    ],
+  },
+  {
+    name: "CoffeeMachine (状態機械)",
+    files: [{ name: "CoffeeMachine.sysml", source: stateMachine }],
+  },
+  {
+    name: "Actions (アクション)",
+    files: [{ name: "Actions.sysml", source: actions }],
+  },
 ];
 
-export const DEFAULT_SOURCE = vehicle;
+export const DEFAULT_SAMPLE = SAMPLES[0];

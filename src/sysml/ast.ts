@@ -9,6 +9,7 @@
 
 export type ElementKind =
   | "namespace"
+  | "file"
   | "package"
   | "library package"
   | "part def"
@@ -107,6 +108,8 @@ export interface SysMLElement {
   transition?: { source?: string; target?: string; trigger?: string; guard?: string };
   children: SysMLElement[];
   parent?: SysMLElement;
+  /** id of the workspace file this element belongs to */
+  fileId?: number;
   /** Character offsets into the source document. */
   start: number;
   end: number;
@@ -160,12 +163,12 @@ export function walk(el: SysMLElement, fn: (el: SysMLElement) => void): void {
   for (const c of el.children) walk(c, fn);
 }
 
-/** Qualified name from root (ignoring unnamed ancestors). */
+/** Qualified name from root (ignoring unnamed ancestors and file nodes). */
 export function qualifiedName(el: SysMLElement): string {
   const parts: string[] = [];
   let cur: SysMLElement | undefined = el;
   while (cur) {
-    if (cur.name) parts.unshift(cur.name);
+    if (cur.name && cur.kind !== "file") parts.unshift(cur.name);
     cur = cur.parent;
   }
   return parts.join("::");
