@@ -1,0 +1,279 @@
+import * as vscode from "vscode";
+import { SysMLElement, elementLabel, qualifiedName } from "../core/ast";
+import { KEYWORDS } from "../core/lexer";
+import { ModelIndex, elementAt } from "./modelIndex";
+
+const SELECTOR: vscode.DocumentSelector = { language: "sysml" };
+
+// ---- diagnostics -------------------------------------------------------
+
+export function registerDiagnostics(
+  context: vscode.ExtensionContext,
+  index: ModelIndex
+): void {
+  const collection = vscode.languages.createDiagnosticCollection("sysml");
+  context.subscriptions.push(collection);
+
+  const refresh = (doc: vscode.TextDocument) => {
+    if (doc.languageId !== "sysml") return;
+    const entry = index.get(doc.uri) ?? index.indexDocument(doc);
+    const diagnostics = entry.result.errors.map((e) => {
+      const range = new vscode.Range(doc.positionAt(e.start), doc.positionAt(e.end));
+      const d = new vscode.Diagnostic(range, e.message, vscode.DiagnosticSeverity.Error);
+      d.source = "sysml";
+      return d;
+    });
+    collection.set(doc.uri, diagnostics);
+  };
+
+  for (const doc of vscode.workspace.textDocuments) refresh(doc);
+
+  let timer: NodeJS.Timeout | undefined;
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument(refresh),
+    vscode.workspace.onDidChangeTextDocument((e) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => refresh(e.document), 300);
+    }),
+    vscode.workspace.onDidCloseTextDocument((doc) => collection.delete(doc.uri))
+  );
+}
+
+// ---- completion --------------------------------------------------------
+
+interface Snippet {
+  label: string;
+  insert: string;
+  detail: string;
+}
+
+const SNIPPETS: Snippet[] = [
+  { label: "package", insert: "package ${1:Name} {\n\t$0\n}", detail: "package 定義" },
+  { label: "part def", insert: "part def ${1:Name} {\n\t$0\n}", detail: "part 定義" },
+  { label: "part", insert: "part ${1:name} : ${2:Type};", detail: "part 使用" },
+  { label: "attribute", insert: "attribute ${1:name} : ${2:Real};", detail: "属性" },
+  { label: "port def", insert: "port def ${1:Name} {\n\t$0\n}", detail: "port 定義" },
+  { label: "port", insert: "port ${1:name} : ${2:PortType};", detail: "port 使用" },
+  { label: "item def", insert: "item def ${1:Name};", detail: "item 定義" },
+  { label: "action def", insert: "action def ${1:Name} {\n\t$0\n}", detail: "action 定義" },
+  { label: "state def", insert: "state def ${1:Name} {\n\t$0\n}", detail: "状態機械定義" },
+  { label: "state", insert: "state ${1:name};", detail: "状態" },
+  {
+    label: "transition",
+    insert: "transition ${1:name} first ${2:source} accept ${3:trigger} then ${4:target};",
+    detail: "状態遷移",
+  },
+  {
+    label: "requirement def",
+    insert: "requirement def ${1:Name} {\n\tdoc /* ${2:説明} */\n\t$0\n}",
+    detail: "要求定義",
+  },
+  { label: "connect", insert: "connect ${1:a.port} to ${2:b.port};", detail: "接続" },
+  { label: "bind", insert: "bind ${1:a} = ${2:b};", detail: "束縛" },
+  { label: "flow", insert: "flow of ${1:Item} from ${2:a.out} to ${3:b.in};", detail: "フロー" },
+  { label: "import", insert: "import ${1:Package}::*;", detail: "インポート" },
+  { label: "doc", insert: "doc /* ${1:説明} */", detail: "ドキュメント" },
+  { label: "perform action", insert: "perform action ${1:name};", detail: "アクション実行" },
+  { label: "exhibit state", insert: "exhibit state ${1:name} : ${2:Behavior};", detail: "状態の表出" },
+  { label: "satisfy requirement", insert: "satisfy requirement ${1:req} by ${2:element};", detail: "要求の充足" },
+  { label: "use case def", insert: "use case def ${1:Name} {\n\t$0\n}", detail: "ユースケース定義" },
+];
+
+export function registerCompletion(
+  context: vscode.ExtensionContext,
+  index: ModelIndex
+): void {
+  const provider: vscode.CompletionItemProvider = {
+    provideCompletionItems() {
+      const items: vscode.CompletionItem[] = [];
+
+      for (const s of SNIPPETS) {
+        const item = new vscode.CompletionItem(s.label, vscode.CompletionItemKind.Snippet);
+        item.insertText = new vscode.SnippetString(s.insert);
+        item.detail = s.detail;
+        item.sortText = "0" + s.label;
+        items.push(item);
+      }
+
+      for (const kw of KEYWORDS) {
+        const item = new vscode.CompletionItem(kw, vscode.CompletionItemKind.Keyword);
+        item.sortText = "2" + kw;
+        items.push(item);
+      }
+
+      for (const name of index.allNames()) {
+        const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Reference);
+        item.sortText = "1" + name;
+        items.push(item);
+      }
+
+      return items;
+    },
+  };
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(SELECTOR, provider)
+  );
+}
+
+// ---- document symbols (outline) -----------------------------------------
+
+const SYMBOL_KINDS: Record<string, vscode.SymbolKind> = {
+  "package": vscode.SymbolKind.Package,
+  "library package": vscode.SymbolKind.Package,
+  "namespace": vscode.SymbolKind.Namespace,
+  "part def": vscode.SymbolKind.Class,
+  "part": vscode.SymbolKind.Object,
+  "attribute def": vscode.SymbolKind.Class,
+  "attribute": vscode.SymbolKind.Property,
+  "port def": vscode.SymbolKind.Interface,
+  "port": vscode.SymbolKind.Property,
+  "item def": vscode.SymbolKind.Class,
+  "item": vscode.SymbolKind.Variable,
+  "action def": vscode.SymbolKind.Class,
+  "action": vscode.SymbolKind.Method,
+  "state def": vscode.SymbolKind.Class,
+  "state": vscode.SymbolKind.Enum,
+  "transition": vscode.SymbolKind.Event,
+  "requirement def": vscode.SymbolKind.Class,
+  "requirement": vscode.SymbolKind.Object,
+  "constraint def": vscode.SymbolKind.Class,
+  "constraint": vscode.SymbolKind.Operator,
+  "interface def": vscode.SymbolKind.Interface,
+  "interface": vscode.SymbolKind.Object,
+  "connection def": vscode.SymbolKind.Class,
+  "connection": vscode.SymbolKind.Object,
+  "connect": vscode.SymbolKind.Event,
+  "bind": vscode.SymbolKind.Event,
+  "flow": vscode.SymbolKind.Event,
+  "enum def": vscode.SymbolKind.Enum,
+  "use case def": vscode.SymbolKind.Class,
+  "use case": vscode.SymbolKind.Object,
+  "import": vscode.SymbolKind.Module,
+  "alias": vscode.SymbolKind.Module,
+};
+
+export function registerDocumentSymbols(
+  context: vscode.ExtensionContext,
+  index: ModelIndex
+): void {
+  const provider: vscode.DocumentSymbolProvider = {
+    provideDocumentSymbols(doc) {
+      const entry = index.get(doc.uri) ?? index.indexDocument(doc);
+
+      const toSymbol = (el: SysMLElement): vscode.DocumentSymbol | undefined => {
+        const label = elementLabel(el);
+        if (!label || el.kind === "doc" || el.kind === "comment") return undefined;
+        const start = Math.min(el.start, doc.getText().length);
+        const end = Math.min(el.end, doc.getText().length);
+        const range = new vscode.Range(doc.positionAt(start), doc.positionAt(end));
+        const selStart = el.nameStart !== undefined ? el.nameStart : start;
+        const selEnd = el.nameEnd !== undefined ? el.nameEnd : Math.min(start + 1, end);
+        const selection = new vscode.Range(doc.positionAt(selStart), doc.positionAt(selEnd));
+        const sym = new vscode.DocumentSymbol(
+          label,
+          el.typedBy.length ? ": " + el.typedBy.join(", ") : el.kind,
+          SYMBOL_KINDS[el.kind] ?? vscode.SymbolKind.Field,
+          range,
+          selection
+        );
+        sym.children = el.children
+          .map(toSymbol)
+          .filter((s): s is vscode.DocumentSymbol => !!s);
+        return sym;
+      };
+
+      return entry.result.root.children
+        .map(toSymbol)
+        .filter((s): s is vscode.DocumentSymbol => !!s);
+    },
+  };
+  context.subscriptions.push(
+    vscode.languages.registerDocumentSymbolProvider(SELECTOR, provider)
+  );
+}
+
+// ---- definition ----------------------------------------------------------
+
+function wordAt(doc: vscode.TextDocument, position: vscode.Position): string | undefined {
+  const range = doc.getWordRangeAtPosition(position, /'[^']*'|[A-Za-z_][A-Za-z0-9_]*/);
+  if (!range) return undefined;
+  let word = doc.getText(range);
+  if (word.startsWith("'") && word.endsWith("'")) word = word.slice(1, -1);
+  return word;
+}
+
+export function registerDefinition(
+  context: vscode.ExtensionContext,
+  index: ModelIndex
+): void {
+  const provider: vscode.DefinitionProvider = {
+    async provideDefinition(doc, position) {
+      const word = wordAt(doc, position);
+      if (!word) return undefined;
+      const decls = index.findDeclarations(word);
+      const locations: vscode.Location[] = [];
+      for (const { file, el } of decls) {
+        // skip the declaration the cursor is already on
+        const offset = doc.offsetAt(position);
+        if (
+          file.uri.toString() === doc.uri.toString() &&
+          el.nameStart !== undefined &&
+          el.nameStart <= offset &&
+          offset <= (el.nameEnd ?? el.nameStart)
+        ) {
+          continue;
+        }
+        const target = await vscode.workspace.openTextDocument(file.uri);
+        const start = el.nameStart ?? el.start;
+        const end = el.nameEnd ?? el.start + 1;
+        locations.push(
+          new vscode.Location(
+            file.uri,
+            new vscode.Range(target.positionAt(start), target.positionAt(end))
+          )
+        );
+      }
+      return locations;
+    },
+  };
+  context.subscriptions.push(
+    vscode.languages.registerDefinitionProvider(SELECTOR, provider)
+  );
+}
+
+// ---- hover ----------------------------------------------------------------
+
+export function registerHover(
+  context: vscode.ExtensionContext,
+  index: ModelIndex
+): void {
+  const provider: vscode.HoverProvider = {
+    provideHover(doc, position) {
+      const entry = index.get(doc.uri) ?? index.indexDocument(doc);
+      const offset = doc.offsetAt(position);
+      const el = elementAt(entry.result.root, offset);
+      if (!el) return undefined;
+
+      const md = new vscode.MarkdownString();
+      md.appendCodeblock(
+        `${el.kind} ${qualifiedName(el)}` +
+          (el.typedBy.length ? ` : ${el.typedBy.join(", ")}` : "") +
+          (el.specializes.length ? ` :> ${el.specializes.join(", ")}` : "") +
+          (el.multiplicity ? ` ${el.multiplicity}` : ""),
+        "sysml"
+      );
+      if (el.doc) md.appendMarkdown("\n" + el.doc);
+
+      // also show the doc of the referenced type
+      const word = wordAt(doc, position);
+      if (word && word !== el.name) {
+        const decl = index.findDeclarations(word)[0];
+        if (decl?.el.doc) {
+          md.appendMarkdown(`\n\n---\n**${word}** (${decl.el.kind}): ${decl.el.doc}`);
+        }
+      }
+      return new vscode.Hover(md);
+    },
+  };
+  context.subscriptions.push(vscode.languages.registerHoverProvider(SELECTOR, provider));
+}

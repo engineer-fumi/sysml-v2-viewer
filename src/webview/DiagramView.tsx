@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
-import { DiagramEdge, DiagramNode, layoutDiagram } from "../diagram/layout";
-import { SysMLElement } from "../sysml/ast";
+import { DiagramEdge, DiagramNode, layoutDiagram } from "../core/layout";
+import { SysMLElement } from "../core/ast";
 
 interface Props {
   root: SysMLElement;
@@ -162,7 +162,6 @@ function EdgeLine({
   const my = (edge.y1 + edge.y2) / 2;
   return (
     <g onClick={(e) => { e.stopPropagation(); onSelect(edge.el); }} style={{ cursor: "pointer" }}>
-      {/* fat invisible hit area */}
       <line x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} stroke="transparent" strokeWidth={10} />
       <line
         x1={edge.x1}
@@ -296,7 +295,10 @@ export function DiagramView({ root, selected, onSelect }: Props) {
         </g>
       </svg>
       {layout.nodes.length === 0 && (
-        <div className="diagram-empty">表示できる要素がありません。<br />package / part などを記述するとここに図が表示されます。</div>
+        <div className="diagram-empty">
+          表示できる要素がありません。<br />
+          ワークスペースの .sysml ファイルに package / part などを記述すると図が表示されます。
+        </div>
       )}
     </div>
   );

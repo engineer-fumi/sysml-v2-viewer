@@ -1,4 +1,4 @@
-import { SysMLElement } from "../sysml/ast";
+import { SysMLElement } from "./ast";
 
 /** Kinds rendered as nested boxes in the diagram. */
 const BOX_KINDS = new Set([
@@ -115,7 +115,7 @@ function nodeLabel(el: SysMLElement): string {
 }
 
 function typeLabel(el: SysMLElement): string | undefined {
-  const t = [...el.typedBy, ...el.specializes.map((s) => s)];
+  const t = [...el.typedBy, ...el.specializes];
   if (!t.length) return undefined;
   return ": " + t.join(", ");
 }

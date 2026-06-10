@@ -1,34 +1,92 @@
 {
   "name": "sysml-v2-viewer",
-  "private": true,
-  "version": "0.1.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview",
-    "server": "node server/index.mjs",
-    "start": "npm run build && node server/index.mjs"
+  "displayName": "SysML v2 Viewer",
+  "description": "SysML v2 (.sysml / .kerml) のオーサリングと可視化: シンタックスハイライト・補完・診断・アウトライン・定義ジャンプ・インターコネクション図",
+  "version": "0.2.0",
+  "publisher": "engineer-fumi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/engineer-fumi/sysml-v2-viewer"
   },
-  "dependencies": {
-    "@codemirror/autocomplete": "^6.18.6",
-    "@codemirror/commands": "^6.8.1",
-    "@codemirror/language": "^6.11.0",
-    "@codemirror/lint": "^6.8.5",
-    "@codemirror/search": "^6.5.10",
-    "@codemirror/state": "^6.5.2",
-    "@codemirror/view": "^6.36.8",
-    "@lezer/highlight": "^1.2.1",
-    "express": "^5.2.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "ssh2": "^1.17.0"
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Visualization"
+  ],
+  "keywords": [
+    "sysml",
+    "sysml-v2",
+    "kerml",
+    "mbse",
+    "modeling"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:sysml"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "sysml",
+        "aliases": [
+          "SysML v2",
+          "sysml"
+        ],
+        "extensions": [
+          ".sysml",
+          ".kerml"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sysml",
+        "scopeName": "source.sysml",
+        "path": "./syntaxes/sysml.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sysml.openDiagram",
+        "title": "SysML: ダイアグラムを開く",
+        "icon": "$(type-hierarchy-sub)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "sysml.openDiagram",
+          "when": "editorLangId == sysml",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "sysml.openDiagram"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "check": "tsc -p tsconfig.extension.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
+    "build": "npm run check && node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "package": "npm run build && vsce package --allow-missing-repository"
   },
   "devDependencies": {
+    "@types/node": "^20.17.30",
     "@types/react": "^18.3.20",
     "@types/react-dom": "^18.3.7",
-    "@vitejs/plugin-react": "^4.4.1",
-    "typescript": "^5.8.3",
-    "vite": "^6.3.5"
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^3.3.2",
+    "esbuild": "^0.25.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.8.3"
   }
 }
