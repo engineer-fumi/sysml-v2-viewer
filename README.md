@@ -42,10 +42,16 @@ SysML v2(`.sysml` / `.kerml`)のオーサリングと可視化を行う VS Code 
 - 編集すると図は自動で追従更新
 - **図からのモデル編集**(テキストへ書き戻し、アンドゥは VS Code 標準):
   - 「⌁ 接続」: 2 要素を順にクリック → 適切なスコープに `connect a to b;` を挿入
-  - 「+part / +port / ...」: コンテナをクリックして要素を追加(名前を入力)
+  - 「+ 追加…」: usage / def / package を選び、コンテナをクリックで挿入。
+    空白クリックで図ルート(またはファイル選択)へトップレベル要素を追加
   - ダブルクリックで宣言名のリネーム、Delete キーで要素削除
-- **配置の保存**: トップレベルのボックスはドラッグで自由に配置でき、
-  位置はワークスペースの `.sysml-layout.json`(サイドカー)に自動保存。
+- **自由配置(どの深さでも)**: 名前付きブロックはネストの深さに関係なく
+  ドラッグで移動でき、親ボックスは子を含むよう自動で拡張。接続線も追従
+- **描画ファイル**: 配置はワークスペースの `.sysml-layout.json`(サイドカー)に
+  「ファイル名#限定名 → オフセット」として図ルート単位で自動保存。
+  git で共有でき、外部変更(pull 等)は図へ自動反映。
+  モデル(.sysml)と描画(.sysml-layout.json)が分離しているため、
+  テキスト編集でモデルが変わっても配置は名前で追従します。
   SVG エクスポートと合わせて drawio の手作業を置き換え可能
 
 ### マルチファイル / リモート
@@ -57,7 +63,7 @@ SysML v2(`.sysml` / `.kerml`)のオーサリングと可視化を行う VS Code 
 ```bash
 npm install
 npm run package        # sysml-v2-viewer-<version>.vsix を生成
-code --install-extension sysml-v2-viewer-0.3.1.vsix
+code --install-extension sysml-v2-viewer-0.4.0.vsix
 ```
 
 開発時は VS Code でこのリポジトリを開いて F5(`samples/` を開いた

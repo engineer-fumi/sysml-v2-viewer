@@ -84,6 +84,15 @@ body,
   font-weight: 600;
 }
 
+.add-select {
+  background: #313244;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
+  border-radius: 5px;
+  font-size: 11.5px;
+  padding: 3px 6px;
+}
+
 .mode-hint {
   font-size: 11px;
   color: #7f849c;

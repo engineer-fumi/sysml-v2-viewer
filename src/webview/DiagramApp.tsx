@@ -79,7 +79,11 @@ function pathFrom(scope: SysMLElement, el: SysMLElement): string {
   return parts.join(".");
 }
 
-const ADD_KINDS = ["part", "port", "attribute", "item", "action", "state", "requirement"] as const;
+const ADD_USAGE_KINDS = ["part", "port", "attribute", "item", "action", "state", "requirement", "constraint"];
+const ADD_DEF_KINDS = [
+  "package", "part def", "port def", "attribute def", "item def",
+  "action def", "state def", "requirement def", "enum def", "use case def",
+];
 
 export function DiagramApp() {
   const [files, setFiles] = useState<SerializedModelFile[]>([]);
@@ -260,6 +264,33 @@ export function DiagramApp() {
     });
   };
 
+  /** add-mode click on the empty canvas: insert at the diagram root scope */
+  const handleBackgroundClick = () => {
+    if (!mode.startsWith("add:")) return;
+    const kind = mode.slice(4);
+    if (diagramRoot === combinedRoot) {
+      // no specific root: let the extension ask which file to extend
+      vscode.postMessage({ type: "edit", action: "addElement", kind, fileId: -1, containerStart: -1 });
+    } else if (diagramRoot.kind === "file") {
+      vscode.postMessage({
+        type: "edit",
+        action: "addElement",
+        kind,
+        fileId: diagramRoot.fileId ?? -1,
+        containerStart: -1,
+      });
+    } else if (diagramRoot.fileId !== undefined) {
+      vscode.postMessage({
+        type: "edit",
+        action: "addElement",
+        kind,
+        fileId: diagramRoot.fileId,
+        containerStart: diagramRoot.start,
+      });
+    }
+    setMode("select");
+  };
+
   const handleMoveBox = (key: string, ddx: number, ddy: number) => {
     const cur = offsets[key] ?? { dx: 0, dy: 0 };
     const next = { ...offsets, [key]: { dx: cur.dx + ddx, dy: cur.dy + ddy } };
@@ -304,11 +335,29 @@ export function DiagramApp() {
         <span className="file-count">{files.length} ファイル</span>
       </div>
       <div className="edit-toolbar">
-        {modeButton("select", "⬚ 選択", "クリックで選択、トップレベル要素はドラッグで配置変更")}
+        {modeButton("select", "⬚ 選択", "クリックで選択、名前付きブロックはドラッグで配置変更")}
         {modeButton("connect", "⌁ 接続", "2 つの要素を順にクリックして connect 文を挿入")}
-        {ADD_KINDS.map((k) =>
-          modeButton(`add:${k}` as EditMode, `+${k}`, `コンテナをクリックして ${k} を追加`)
-        )}
+        <select
+          className="add-select"
+          value={mode.startsWith("add:") ? mode.slice(4) : ""}
+          onChange={(e) => {
+            setConnectSource(undefined);
+            setMode(e.target.value ? (`add:${e.target.value}` as EditMode) : "select");
+          }}
+          title="追加する要素の種類を選び、追加先 (コンテナ or 空白=図ルート) をクリック"
+        >
+          <option value="">+ 追加…</option>
+          <optgroup label="使用 (usage)">
+            {ADD_USAGE_KINDS.map((k) => (
+              <option key={k} value={k}>{k}</option>
+            ))}
+          </optgroup>
+          <optgroup label="定義 (def)">
+            {ADD_DEF_KINDS.map((k) => (
+              <option key={k} value={k}>{k}</option>
+            ))}
+          </optgroup>
+        </select>
         <button className="mode-btn" onClick={resetLayout} title="この図の手動配置をリセット">
           ⟲ 配置リセット
         </button>
@@ -318,8 +367,8 @@ export function DiagramApp() {
               ? `接続元: ${connectSource.name ?? connectSource.kind} → 接続先をクリック`
               : "接続元をクリック"
             : mode.startsWith("add:")
-              ? "追加先のコンテナをクリック (Esc で取消)"
-              : "ダブルクリックでリネーム / Delete で削除"}
+              ? `${mode.slice(4)} の追加先をクリック — コンテナ or 空白 (図ルートへ) / Esc で取消`
+              : "ドラッグで配置変更 / ダブルクリックでリネーム / Delete で削除"}
         </span>
       </div>
       <DiagramView
@@ -332,6 +381,7 @@ export function DiagramApp() {
         onElementClick={handleElementClick}
         onElementDoubleClick={handleElementDoubleClick}
         onMoveBox={handleMoveBox}
+        onBackgroundClick={handleBackgroundClick}
       />
     </div>
   );

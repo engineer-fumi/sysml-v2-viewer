@@ -124,6 +124,7 @@ function typeLabel(el: SysMLElement): string | undefined {
 
 function attributeLine(el: SysMLElement): string {
   let s = el.name ?? el.target ?? "";
+  if (!s && el.redefines.length) s = ":>> " + el.redefines.join(", ");
   if (el.kind === "import" || el.kind === "alias") s = `${el.kind} ${el.target ?? ""}`;
   if (el.typedBy.length) s += " : " + el.typedBy.join(", ");
   if (el.multiplicity) s += " " + el.multiplicity;
@@ -155,7 +156,7 @@ function shouldRenderAsBox(el: SysMLElement): boolean {
   return false;
 }
 
-function measure(el: SysMLElement, depth: number): RelNode {
+function measure(el: SysMLElement, depth: number, opts: LayoutOptions): RelNode {
   const attributes: string[] = [];
   const ports: SysMLElement[] = [];
   const children: RelNode[] = [];
@@ -165,7 +166,7 @@ function measure(el: SysMLElement, depth: number): RelNode {
     if (PORT_KINDS.has(c.kind)) {
       ports.push(c);
     } else if (shouldRenderAsBox(c) && depth < 6) {
-      children.push(measure(c, depth + 1));
+      children.push(measure(c, depth + 1, opts));
     } else if (TEXT_KINDS.has(c.kind) || c.kind === "unknown") {
       const line = attributeLine(c);
       if (line.trim()) attributes.push(line);
@@ -198,17 +199,40 @@ function measure(el: SysMLElement, depth: number): RelNode {
       childPos.push({ x, y });
       x += c.size.w + GAP;
       rowH = Math.max(rowH, c.size.h);
-      innerW = Math.max(innerW, x - GAP);
     }
-    innerH = y + rowH;
+
+    // manual offsets (saved diagram layout) – any child may be moved freely;
+    // the parent grows to keep containing its children
+    if (opts.offsets && opts.keyOf) {
+      let minX = 0;
+      let minY = 0;
+      children.forEach((c, i) => {
+        const o = opts.offsets![opts.keyOf!(c.el)];
+        if (o) {
+          childPos[i].x += o.dx;
+          childPos[i].y += o.dy;
+        }
+        minX = Math.min(minX, childPos[i].x);
+        minY = Math.min(minY, childPos[i].y);
+      });
+      if (minX < 0 || minY < 0) {
+        for (const p of childPos) {
+          p.x -= minX;
+          p.y -= minY;
+        }
+      }
+    }
+    children.forEach((c, i) => {
+      innerW = Math.max(innerW, childPos[i].x + c.size.w);
+      innerH = Math.max(innerH, childPos[i].y + c.size.h);
+    });
   }
 
   // room for port labels sticking out
   const portLabelW = ports.reduce((m, p) => Math.max(m, textWidth(p.name ?? "")), 0);
 
   const w = Math.max(MIN_W, headerW, attrW, innerW + PAD * 2, portLabelW + MIN_W);
-  const portH = ports.length ? Math.ceil(ports.length / 2) * (PORT_SIZE + 14) : 0;
-  const h = headerH + attrH + (children.length ? innerH + PAD * 2 : PAD) + Math.max(0, portH - (children.length ? innerH : 0)) * 0;
+  const h = headerH + attrH + (children.length ? innerH + PAD * 2 : PAD);
 
   const minPortH = headerH + Math.ceil(ports.length / 2) * (PORT_SIZE + 16) + PAD;
 
@@ -367,14 +391,14 @@ export function layoutDiagram(root: SysMLElement, options: LayoutOptions = {}): 
     if (el.kind === "file") {
       el.children.forEach(addTop);
     } else if (shouldRenderAsBox(el)) {
-      rels.push(measure(el, 0));
+      rels.push(measure(el, 0, options));
     }
   };
   root.children.forEach(addTop);
   // if the root itself is a box-ish element with no box children at top level,
   // render the root itself
   if (!rels.length && shouldRenderAsBox(root)) {
-    rels.push(measure(root, 0));
+    rels.push(measure(root, 0, options));
   }
 
   const nodes: DiagramNode[] = [];

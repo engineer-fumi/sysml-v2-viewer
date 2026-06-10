@@ -2,16 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { DiagramEdge, DiagramNode, LayoutOffsets, layoutDiagram } from "../core/layout";
 import { SysMLElement } from "../core/ast";
 
-export type EditMode =
-  | "select"
-  | "connect"
-  | "add:part"
-  | "add:port"
-  | "add:attribute"
-  | "add:item"
-  | "add:action"
-  | "add:state"
-  | "add:requirement";
+export type EditMode = "select" | "connect" | `add:${string}`;
 
 interface Interaction {
   mode: EditMode;
@@ -32,8 +23,10 @@ interface Props {
   keyOf: (el: SysMLElement) => string;
   onElementClick: (el: SysMLElement) => void;
   onElementDoubleClick: (el: SysMLElement) => void;
-  /** commit a top-level box move (delta in diagram coordinates) */
+  /** commit a box move (delta in diagram coordinates) */
   onMoveBox: (key: string, ddx: number, ddy: number) => void;
+  /** click on empty canvas (used by the add modes) */
+  onBackgroundClick?: () => void;
 }
 
 const KIND_FILL: Record<string, string> = {
@@ -76,7 +69,8 @@ function strokeFor(node: DiagramNode, it: Interaction): { stroke: string; width:
 function NodeBox({ node, it }: { node: DiagramNode; it: Interaction }) {
   const { stroke, width } = strokeFor(node, it);
   const headerY = node.y + 14;
-  const draggable = node.depth === 0 && it.mode === "select";
+  // any named box can be moved in select mode (children re-anchor the parent)
+  const draggable = it.mode === "select" && !!node.el.name;
   return (
     <g>
       <rect
@@ -241,10 +235,12 @@ export function DiagramView({
   onElementClick,
   onElementDoubleClick,
   onMoveBox,
+  onBackgroundClick,
 }: Props) {
   const [view, setView] = useState({ tx: 20, ty: 20, scale: 1 });
   const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const boxDragRef = useRef<{ key: string; x: number; y: number } | null>(null);
+  const downPosRef = useRef<{ x: number; y: number } | null>(null);
   const [liveDrag, setLiveDrag] = useState<{ key: string; dx: number; dy: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -280,7 +276,14 @@ export function DiagramView({
   };
 
   const onMouseDown = (e: React.MouseEvent) => {
+    downPosRef.current = { x: e.clientX, y: e.clientY };
     panRef.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+  };
+
+  const onSvgClick = (e: React.MouseEvent) => {
+    const d = downPosRef.current;
+    const moved = d ? Math.hypot(e.clientX - d.x, e.clientY - d.y) : 0;
+    if (moved < 4) onBackgroundClick?.();
   };
 
   const onMouseMove = (e: React.MouseEvent) => {
@@ -366,6 +369,7 @@ export function DiagramView({
         onMouseUp={endDrag}
         onMouseLeave={endDrag}
         onDoubleClick={fit}
+        onClick={onSvgClick}
       >
         <defs>
           {Object.entries(EDGE_COLOR).map(([kind, color]) => (

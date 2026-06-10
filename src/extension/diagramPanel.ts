@@ -130,6 +130,13 @@ export class DiagramPanel {
       this.disposables
     );
 
+    // reflect external edits to the layout sidecar (git pull, manual edits ...)
+    const layoutWatcher = vscode.workspace.createFileSystemWatcher(`**/${LAYOUT_FILE}`);
+    layoutWatcher.onDidChange(() => this.schedulePostModel());
+    layoutWatcher.onDidCreate(() => this.schedulePostModel());
+    layoutWatcher.onDidDelete(() => this.schedulePostModel());
+    this.disposables.push(layoutWatcher);
+
     this.disposables.push(
       this.index.onDidChangeModel(() => this.schedulePostModel()),
       vscode.window.onDidChangeTextEditorSelection((e) => {
@@ -251,7 +258,18 @@ export class DiagramPanel {
   }
 
   private async applyEdit(msg: AddConnectMessage | AddElementMessage | RenameMessage | DeleteMessage): Promise<void> {
-    const file = this.index.getByFileId(msg.fileId);
+    let file = this.index.getByFileId(msg.fileId);
+    if (!file && msg.action === "addElement" && msg.fileId < 0) {
+      // no target file (combined-model background click): ask the user
+      const files = this.index.all(false);
+      if (!files.length) return;
+      const picked = await vscode.window.showQuickPick(
+        files.map((f) => ({ label: f.name, file: f })),
+        { placeHolder: `${msg.kind} を追加するファイルを選択` }
+      );
+      if (!picked) return;
+      file = picked.file;
+    }
     if (!file) return;
 
     switch (msg.action) {
