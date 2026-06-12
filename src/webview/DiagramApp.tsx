@@ -99,6 +99,18 @@ export function DiagramApp() {
   const [pendingHighlight, setPendingHighlight] = useState<
     { fileId: number; offset: number } | undefined
   >(undefined);
+  // layout undo / redo: snapshots of a root's offsets before each mutation
+  const undoRef = useRef<{ layoutKey: string; offsets: LayoutOffsets }[]>([]);
+  const redoRef = useRef<{ layoutKey: string; offsets: LayoutOffsets }[]>([]);
+  const [historySize, setHistorySize] = useState({ undo: 0, redo: 0 });
+  /** latest layouts, readable from stable event handlers */
+  const layoutsRef = useRef<Layouts>({});
+  layoutsRef.current = layouts;
+  /** latest undo / redo functions for the global keydown listener */
+  const historyFnRef = useRef<{ undo: () => void; redo: () => void }>({
+    undo: () => {},
+    redo: () => {},
+  });
 
   // combined model from all files
   const { combinedRoot, fileNameById } = useMemo(() => {
@@ -169,6 +181,12 @@ export function DiagramApp() {
   // ESC resets the edit mode; Delete removes the selected element
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) historyFnRef.current.redo();
+        else historyFnRef.current.undo();
+        return;
+      }
       if (e.key === "Escape") {
         setMode("select");
         setConnectSource(undefined);
@@ -302,7 +320,49 @@ export function DiagramApp() {
     setMode("select");
   };
 
+  const syncHistorySize = () => {
+    setHistorySize({ undo: undoRef.current.length, redo: redoRef.current.length });
+  };
+
+  /** snapshot the current offsets before a layout mutation */
+  const pushUndo = () => {
+    undoRef.current.push({ layoutKey, offsets: JSON.parse(JSON.stringify(offsets)) });
+    if (undoRef.current.length > 50) undoRef.current.shift();
+    redoRef.current = [];
+    syncHistorySize();
+  };
+
+  const applySnapshot = (snap: { layoutKey: string; offsets: LayoutOffsets }) => {
+    setLayouts((prev) => ({ ...prev, [snap.layoutKey]: snap.offsets }));
+    vscode.postMessage({ type: "saveLayout", rootKey: snap.layoutKey, offsets: snap.offsets });
+  };
+
+  const undoLayout = () => {
+    const snap = undoRef.current.pop();
+    if (!snap) return;
+    redoRef.current.push({
+      layoutKey: snap.layoutKey,
+      offsets: JSON.parse(JSON.stringify(layoutsRef.current[snap.layoutKey] ?? {})),
+    });
+    applySnapshot(snap);
+    syncHistorySize();
+  };
+
+  const redoLayout = () => {
+    const snap = redoRef.current.pop();
+    if (!snap) return;
+    undoRef.current.push({
+      layoutKey: snap.layoutKey,
+      offsets: JSON.parse(JSON.stringify(layoutsRef.current[snap.layoutKey] ?? {})),
+    });
+    applySnapshot(snap);
+    syncHistorySize();
+  };
+
+  historyFnRef.current = { undo: undoLayout, redo: redoLayout };
+
   const handleMoveBox = (key: string, ddx: number, ddy: number) => {
+    pushUndo();
     const cur = offsets[key] ?? { dx: 0, dy: 0 };
     const next = { ...offsets, [key]: { ...cur, dx: cur.dx + ddx, dy: cur.dy + ddy } };
     setLayouts((prev) => ({ ...prev, [layoutKey]: next }));
@@ -310,6 +370,7 @@ export function DiagramApp() {
   };
 
   const handleResizeBox = (key: string, ddw: number, ddh: number, fromTop: boolean) => {
+    pushUndo();
     const cur = offsets[key] ?? { dx: 0, dy: 0 };
     const dw = Math.max(0, (cur.dw ?? 0) + ddw);
     // resizing from the top grows the upper edge: the box shifts up by the
@@ -322,17 +383,20 @@ export function DiagramApp() {
   };
 
   const resetLayout = () => {
+    pushUndo();
     setLayouts((prev) => ({ ...prev, [layoutKey]: {} }));
     vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: {} });
   };
 
   const handleMovePort = (key: string, side: PortSide, t: number) => {
+    pushUndo();
     const next = { ...offsets, [key]: { dx: 0, dy: 0, side, t } };
     setLayouts((prev) => ({ ...prev, [layoutKey]: next }));
     vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
   };
 
   const handleRouteEdge = (key: string, points: { x: number; y: number }[]) => {
+    pushUndo();
     const cur = offsets[key];
     const next = { ...offsets };
     if (points.length) {
@@ -352,6 +416,7 @@ export function DiagramApp() {
   };
 
   const handleEdgeStyle = (key: string, style: EdgeStyle) => {
+    pushUndo();
     const cur = offsets[key] ?? { dx: 0, dy: 0 };
     const next = { ...offsets };
     if (style === "straight" && !cur.wp?.length) {
@@ -436,6 +501,22 @@ export function DiagramApp() {
             ))}
           </optgroup>
         </select>
+        <button
+          className="mode-btn"
+          onClick={() => historyFnRef.current.undo()}
+          disabled={historySize.undo === 0}
+          title="配置・サイズ・線編集を元に戻す (Cmd/Ctrl+Z)"
+        >
+          ↩ 元に戻す
+        </button>
+        <button
+          className="mode-btn"
+          onClick={() => historyFnRef.current.redo()}
+          disabled={historySize.redo === 0}
+          title="やり直す (Shift+Cmd/Ctrl+Z)"
+        >
+          ↪ やり直す
+        </button>
         <button className="mode-btn" onClick={resetLayout} title="この図の手動配置をリセット">
           ⟲ 配置リセット
         </button>
@@ -446,7 +527,7 @@ export function DiagramApp() {
               : "接続元をクリック"
             : mode.startsWith("add:")
               ? `${mode.slice(4)} の追加先をクリック — コンテナ or 空白 (図ルートへ) / Esc で取消`
-              : "ドラッグで配置変更 (port は辺に沿って / 線は中継点を追加) / 右下・右上ハンドルでサイズ変更 / ダブルクリックでリネーム (中継点は削除) / Delete で削除"}
+              : "ドラッグで配置変更 (port は辺に沿って / 線は中継点を追加・近くをつかむと移動) / 右下・右上ハンドルでサイズ変更 / ダブルクリックでリネーム (中継点は削除) / Delete で削除 / Cmd+Z で元に戻す"}
         </span>
       </div>
       <DiagramView

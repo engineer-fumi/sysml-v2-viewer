@@ -430,14 +430,8 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
       />
       {/* waypoint handles: drag to move, double-click to remove */}
       {waypoints.map((p, i) => (
-        <circle
+        <g
           key={i}
-          cx={p.x}
-          cy={p.y}
-          r={4}
-          fill={color}
-          stroke="#1e1e2e"
-          strokeWidth={1}
           onMouseDown={(e) => {
             if (routable) {
               e.stopPropagation();
@@ -449,7 +443,10 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
             it.onWaypointRemove(edge, i);
           }}
           style={{ cursor: "move" }}
-        />
+        >
+          <circle cx={p.x} cy={p.y} r={9} fill="transparent" />
+          <circle cx={p.x} cy={p.y} r={4} fill={color} stroke="#1e1e2e" strokeWidth={1} />
+        </g>
       ))}
       {edge.label && (
         <text
@@ -622,19 +619,35 @@ export function DiagramView({
       dragIndex = waypointIndex;
     } else {
       const m = toDiagram(e.clientX, e.clientY);
-      // find the segment closest to the click and insert a waypoint there
-      const pts = [{ x: edge.x1, y: edge.y1 }, ...points, { x: edge.x2, y: edge.y2 }];
-      let best = 0;
-      let bestD = Infinity;
-      for (let i = 0; i < pts.length - 1; i++) {
-        const d = distToSegment(m, pts[i], pts[i + 1]);
-        if (d < bestD) {
-          bestD = d;
-          best = i;
+      // clicking near an existing waypoint grabs it (instead of piling up
+      // new waypoints on every drag)
+      const grabRadius = 10 / view.scale;
+      let nearest = -1;
+      let nearestD = grabRadius;
+      points.forEach((p, i) => {
+        const d = Math.hypot(p.x - m.x, p.y - m.y);
+        if (d <= nearestD) {
+          nearestD = d;
+          nearest = i;
         }
+      });
+      if (nearest >= 0) {
+        dragIndex = nearest;
+      } else {
+        // otherwise insert a waypoint on the closest segment
+        const pts = [{ x: edge.x1, y: edge.y1 }, ...points, { x: edge.x2, y: edge.y2 }];
+        let best = 0;
+        let bestD = Infinity;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const d = distToSegment(m, pts[i], pts[i + 1]);
+          if (d < bestD) {
+            bestD = d;
+            best = i;
+          }
+        }
+        points.splice(best, 0, m);
+        dragIndex = best;
       }
-      points.splice(best, 0, m);
-      dragIndex = best;
     }
     const base = edgeRoutingBase(edge);
     if (!base) return;

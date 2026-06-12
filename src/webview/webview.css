@@ -175,3 +175,8 @@ body,
   pointer-events: none;
   line-height: 1.7;
 }
+
+.mode-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
