@@ -98,6 +98,10 @@ library package Views {
 
 library package Metaobjects {
     abstract metadata def Metaobject;
+    metadata def SemanticMetadata :> Metaobject {
+        ref baseType;
+        attribute isMandatory : ScalarValues::Boolean;
+    }
 }
 
 library package Flows {
@@ -116,6 +120,8 @@ const quantities = `library package Quantities {
     abstract attribute def VectorQuantityValue :> TensorQuantityValue;
     abstract attribute def ScalarQuantityValue :> VectorQuantityValue;
     alias QuantityValue for ScalarQuantityValue;
+    attribute scalarQuantities : ScalarQuantityValue;
+    attribute tensorQuantities : TensorQuantityValue;
 }
 
 library package ISQ {
@@ -163,6 +169,8 @@ library package ISQ {
     attribute area : AreaValue;
     attribute volume : VolumeValue;
     attribute angle : AngleValue;
+    attribute angularMeasure : AngleValue;
+    attribute distancePerVolume : Quantities::ScalarQuantityValue;
 }
 
 library package Time {
@@ -177,6 +185,53 @@ library package MeasurementReferences {
     attribute def ScalarMeasurementReference :> VectorMeasurementReference;
     alias MeasurementReference for TensorMeasurementReference;
     attribute def CoordinateFrame :> VectorMeasurementReference;
+    attribute def MeasurementUnit :> ScalarMeasurementReference;
+    attribute def SimpleUnit :> MeasurementUnit;
+    attribute def DerivedUnit :> MeasurementUnit;
+}
+
+library package SIPrefixes {
+    attribute def UnitPrefix;
+    attribute kilo : UnitPrefix;
+    attribute milli : UnitPrefix;
+    attribute micro : UnitPrefix;
+    attribute mega : UnitPrefix;
+    attribute giga : UnitPrefix;
+    attribute centi : UnitPrefix;
+    attribute nano : UnitPrefix;
+}
+
+library package ModelingMetadata {
+    enum def StatusKind {
+        open;
+        tbd;
+        tbr;
+        tbc;
+        closed;
+        done;
+    }
+    metadata def StatusInfo {
+        attribute originator : ScalarValues::String;
+        attribute owner : ScalarValues::String;
+        attribute status : StatusKind;
+    }
+    metadata def Rationale {
+        attribute text : ScalarValues::String;
+    }
+    metadata def Issue {
+        attribute text : ScalarValues::String;
+    }
+    enum def RiskLevel {
+        low;
+        medium;
+        high;
+    }
+    metadata def Risk {
+        attribute totalRisk : RiskLevel;
+        attribute probability : RiskLevel;
+        attribute impact : RiskLevel;
+    }
+    attribute def Level;
 }
 
 library package BaseFunctions {

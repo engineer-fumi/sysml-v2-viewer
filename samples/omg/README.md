@@ -26,7 +26,8 @@
 以下は今後の対応課題として未収録です:
 
 - `SysML v2 Spec Annex A SimpleVehicleModel.sysml` — 仕様付録 A の包括モデル
-  (variant / individual / view など未対応構文が残っているため)
+  (構文は全文パース可能になったが、深いフィーチャチェーン等の
+  意味解決に未解決警告が残るため)
 - `VehicleDefinitions/Usages/Individuals.sysml` (Vehicle Example) —
   既存サンプル `vehicle-project` とパッケージ名が衝突するため
 - `HSUVRequirements.sysml` — 別ライブラリの要求種別定義に依存するため

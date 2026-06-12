@@ -168,12 +168,6 @@ class Parser {
         }
         continue;
       }
-      // metadata prefix: `#derivation connection def ...` / `end #original r1`
-      if (t.type === "punct" && t.text === "#") {
-        this.next();
-        if (this.atIdentifier()) modifiers.push("#" + this.parseQualifiedName(false, false));
-        continue;
-      }
       if (t.type !== "keyword") break;
       if (t.text === "in" || t.text === "out" || t.text === "inout") {
         // direction only applies when followed by a declaration keyword/name,
@@ -298,6 +292,7 @@ class Parser {
         case "dependency":
         case "filter":
         case "rep":
+        case "render":
         case "language":
           return this.parseOpaqueStatement(startTok);
         case "def": {
@@ -342,14 +337,23 @@ class Parser {
       return this.parseDeclaration("ref", modifiers, direction, startTok, /*implicitKind*/ true);
     }
 
-    // ---- anonymous feature starting with a relationship token:
-    // `redefines mass = 1000 [kg];` / `ref :>> system;` / `:> base;`
+    // ---- anonymous feature starting with a relationship token or value:
+    // `redefines mass = 1000 [kg];` / `ref :>> system;` / `subject = v;`
     if (
       t.text === ":>>" || t.text === "redefines" ||
       t.text === ":>" || t.text === "specializes" || t.text === "subsets" ||
-      t.text === "::>" || t.text === "references"
+      t.text === "::>" || t.text === "references" || t.text === "="
     ) {
       return this.parseDeclaration("ref", modifiers, direction, startTok, /*implicitKind*/ true);
+    }
+
+    // bare re-declaration: `subject;`
+    if (t.text === ";" && modifiers.length) {
+      this.next();
+      const el = createElement("ref", startTok.start);
+      el.modifiers = modifiers;
+      el.end = t.end;
+      return el;
     }
 
     this.error(`予期しないトークン '${t.text}'`, t.start, t.end);
@@ -454,8 +458,9 @@ class Parser {
     return el;
   }
 
-  /** connection end: `path` or a named end `endName ::> path` */
+  /** connection end: `[mult] path` or a named end `endName ::> path` */
   private parseConnectEnd(el: SysMLElement): string {
+    if (this.at("[")) this.parseMultiplicity();
     if (
       this.atIdentifier() &&
       (this.peek(1).text === "::>" || this.peek(1).text === "references")
@@ -508,7 +513,14 @@ class Parser {
       el.nameEnd = t.end;
       if (this.eat(":")) el.typedBy.push(this.qnameRef(el, "type"));
     }
-    if (this.eat("of")) el.typedBy.push(this.qnameRef(el, "type"));
+    if (this.eat("of")) {
+      // payload may be declared as `name : Type`
+      if (this.atIdentifier() && this.peek(1).text === ":") {
+        this.next(); // payload name
+        this.next(); // ':'
+      }
+      el.typedBy.push(this.qnameRef(el, "type"));
+    }
     const ends: ConnectionEnd[] = [];
     if (this.eat("from")) {
       ends.push({ path: this.qnameRef(el, "end", false, true) });
@@ -539,9 +551,13 @@ class Parser {
     const el = createElement(kindMap[kw] ?? "unknown", startTok.start);
     el.modifiers = [...modifiers, kw];
     this.takePendingDoc(el);
-    // optional sub-keyword: action / state / requirement / occurrence ...
+    // optional sub-keyword: action / state / requirement / use case ...
     const t = this.peek();
     if (t.type === "keyword" && DEF_KINDS.has(t.text)) this.next();
+    else if (this.at("use")) {
+      this.next();
+      this.eat("case");
+    }
     if (kw === "allocate") {
       const ends: ConnectionEnd[] = [{ path: this.qnameRef(el, "end", false, true) }];
       if (this.eat("to")) ends.push({ path: this.qnameRef(el, "end", false, true) });
@@ -550,7 +566,7 @@ class Parser {
       return el;
     }
     const t2 = this.peek();
-    el.target = this.parseQualifiedName(false, /*allowDots*/ true);
+    el.target = this.parseQualifiedName(/*allowStar*/ kw === "expose", /*allowDots*/ true);
     const targetEnd = this.qnameEnd;
     el.name = el.target;
     el.nameStart = t2.start;
@@ -569,6 +585,10 @@ class Parser {
         el.multiplicity = this.parseMultiplicity();
         continue;
       }
+      if (this.at("parallel") || this.at("ordered") || this.at("nonunique")) {
+        el.modifiers.push(this.next().text);
+        continue;
+      }
       if (this.eat(":>") || this.eat("specializes") || this.eat("subsets") || this.eat("::>")) {
         el.specializes.push(this.qnameRef(el, "specialize", false, true));
         while (this.eat(",")) el.specializes.push(this.qnameRef(el, "specialize", false, true));
@@ -580,6 +600,11 @@ class Parser {
         continue;
       }
       break;
+    }
+    // optional bound value: `event occurrence x = port.received;`
+    if (this.at("=")) {
+      this.next();
+      el.value = this.captureUntil([";", "{"]);
     }
     // without typing / specialization, the name references an existing element
     if (!typed && !el.specializes.length && !el.redefines.length && kw !== "event" && el.target) {
@@ -639,6 +664,10 @@ class Parser {
     if (this.eat("if")) {
       el.transition.guard = this.captureUntil(["then", ";", "{"]);
     }
+    if (this.eat("do")) {
+      // effect action (e.g. `do send Cmd via port`), kept as opaque text
+      this.captureUntil(["then", ";", "{"]);
+    }
     if (this.eat("then")) {
       el.transition.target = this.qnameRef(el, "end", false, true);
     }
@@ -656,7 +685,10 @@ class Parser {
       this.next();
       return this.parseDeclarationTail(el, "action", startTok);
     }
-    if (this.atIdentifier()) {
+    if (this.at("send") || this.at("accept")) {
+      // `do send X via port;` – opaque effect text
+      this.captureUntil([";", "{"]);
+    } else if (this.atIdentifier()) {
       el.target = this.parseFeatureChain();
     }
     this.parseBodyOrSemi(el);
@@ -740,7 +772,7 @@ class Parser {
         continue;
       }
       // collection modifiers after the multiplicity: [4] ordered nonunique
-      if (this.at("ordered") || this.at("nonunique") || this.at("non-unique")) {
+      if (this.at("ordered") || this.at("nonunique") || this.at("non-unique") || this.at("parallel")) {
         el.modifiers.push(this.next().text);
         continue;
       }
@@ -751,6 +783,16 @@ class Parser {
     if ((kind === "connection" || kind === "interface" || kind === "allocation") && this.at("connect")) {
       this.next();
       return this.parseConnectBody(kind, { start: el.start } as Token, el.modifiers, el);
+    }
+    // `allocation a : T allocate x to y { ... }`
+    if (kind === "allocation" && this.at("allocate")) {
+      this.next();
+      return this.parseConnectBody(kind, { start: el.start } as Token, el.modifiers, el);
+    }
+    // accept / send action shorthand: `action trigger accept cmd : Cmd via port;`
+    // (kept as opaque text)
+    if ((kind === "action" || kind === "action def") && (this.at("accept") || this.at("send"))) {
+      this.captureUntil([";", "{"]);
     }
 
     // value part

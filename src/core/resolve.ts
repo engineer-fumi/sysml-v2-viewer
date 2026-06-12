@@ -12,7 +12,10 @@ import { SysMLElement } from "./ast";
 export class Resolver {
   /** scopes currently having their imports resolved (cycle guard) */
   private importStack = new Set<SysMLElement>();
-  private importCache = new Map<SysMLElement, { star: boolean; target: SysMLElement }[]>();
+  private importCache = new Map<
+    SysMLElement,
+    { star: boolean; isPublic: boolean; target: SysMLElement }[]
+  >();
 
   constructor(private root: SysMLElement) {}
 
@@ -53,7 +56,7 @@ export class Resolver {
       // imports declared in this scope
       for (const imp of this.importsOf(s)) {
         if (imp.star) {
-          const viaStar = this.lookupLocal(imp.target, name, exclude);
+          const viaStar = this.lookupExported(imp.target, name, new Set(), exclude);
           if (viaStar) return viaStar;
         } else if (imp.target.name === name || imp.target.shortName === name) {
           return imp.target;
@@ -64,6 +67,33 @@ export class Resolver {
     for (const file of this.root.children) {
       const m = this.lookupLocal(file, name, exclude);
       if (m) return m;
+    }
+    return undefined;
+  }
+
+  /**
+   * Member of a namespace as visible from outside: direct members plus
+   * anything re-exported through its `public import` chain (transitive,
+   * cycle-guarded). Private imports are not re-exported.
+   */
+  private lookupExported(
+    ns: SysMLElement,
+    name: string,
+    seen: Set<SysMLElement>,
+    exclude?: SysMLElement
+  ): SysMLElement | undefined {
+    if (seen.has(ns)) return undefined;
+    seen.add(ns);
+    const direct = this.lookupLocal(ns, name, exclude);
+    if (direct) return direct;
+    for (const imp of this.importsOf(ns)) {
+      if (!imp.isPublic) continue;
+      if (imp.star) {
+        const m = this.lookupExported(imp.target, name, seen, exclude);
+        if (m) return m;
+      } else if (imp.target.name === name || imp.target.shortName === name) {
+        return imp.target;
+      }
     }
     return undefined;
   }
@@ -130,7 +160,7 @@ export class Resolver {
       if (!cur) {
         for (const imp of this.importsOf(s)) {
           if (imp.star) {
-            cur = this.lookupLocal(imp.target, segments[0]);
+            cur = this.lookupExported(imp.target, segments[0], new Set());
           } else if (imp.target.name === segments[0] || imp.target.shortName === segments[0]) {
             cur = imp.target;
           }
@@ -152,23 +182,26 @@ export class Resolver {
   }
 
   /** Imports declared directly in a scope, resolved (cached, cycle-guarded). */
-  private importsOf(scope: SysMLElement): { star: boolean; target: SysMLElement }[] {
+  private importsOf(
+    scope: SysMLElement
+  ): { star: boolean; isPublic: boolean; target: SysMLElement }[] {
     const cached = this.importCache.get(scope);
     if (cached) return cached;
     if (this.importStack.has(scope)) return [];
     this.importStack.add(scope);
-    const out: { star: boolean; target: SysMLElement }[] = [];
+    const out: { star: boolean; isPublic: boolean; target: SysMLElement }[] = [];
     try {
       for (const c of scope.children) {
         if (c.kind !== "import" || !c.target) continue;
         const star = /::\*\*?$/.test(c.target) || c.target.endsWith("*");
+        const isPublic = !c.modifiers.includes("private") && !c.modifiers.includes("protected");
         const base = c.target.replace(/(::)?\*\*?$/, "");
         if (!base) continue;
         // import targets resolve from the importing scope itself so sibling /
         // child packages work (`package P { import Defs::*; package Defs {} }`);
         // the importStack guard prevents self-recursion through this scope
         const target = this.resolve(scope, base);
-        if (target) out.push({ star, target });
+        if (target) out.push({ star, isPublic, target });
       }
     } finally {
       this.importStack.delete(scope);
