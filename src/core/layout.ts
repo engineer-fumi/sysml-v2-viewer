@@ -805,6 +805,22 @@ function subjectTypeOf(el: SysMLElement): string | undefined {
   return undefined;
 }
 
+/**
+ * Whether one box's element contains the other's. Synthesized relationship
+ * edges (import / specialize / compose / assoc) are suppressed for nested
+ * pairs: containment is already shown by the box nesting, and a line from a
+ * parent box into its own child renders as a stray arrow.
+ */
+function isNestedPair(a: DiagramNode, b: DiagramNode): boolean {
+  for (let cur: SysMLElement | undefined = b.el.parent; cur; cur = cur.parent) {
+    if (cur === a.el) return true;
+  }
+  for (let cur: SysMLElement | undefined = a.el.parent; cur; cur = cur.parent) {
+    if (cur === b.el) return true;
+  }
+  return false;
+}
+
 /** box of el itself, or of its nearest boxed ancestor */
 function nearestBox(
   el: SysMLElement | undefined,
@@ -1044,7 +1060,7 @@ export function layoutDiagram(root: SysMLElement, options: LayoutOptions = {}): 
     const seen = new Set<string>();
     for (const a of els) {
       const ub = nearestBox(a.parent, boxByEl);
-      if (!ub || ub === fig) continue;
+      if (!ub || ub === fig || isNestedPair(fig, ub)) continue;
       const key = `${ub.x},${ub.y}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -1177,7 +1193,7 @@ function buildRefEdge(
     source = nearestBox(resolvePath(scope, el.ends![1].path, el), boxByEl);
   }
   source ??= nearestBox(scope, boxByEl);
-  if (!source || source === target) return undefined;
+  if (!source || source === target || isNestedPair(source, target)) return undefined;
 
   const stereo = el.modifiers.includes("verify")
     ? "verify"
@@ -1211,7 +1227,7 @@ function specializeEdges(boxByEl: Map<SysMLElement, DiagramNode>): DiagramEdge[]
     for (const name of el.specializes) {
       const t = el.parent ? resolvePath(el.parent, name) : undefined;
       const tb = t ? boxByEl.get(t) : undefined;
-      if (!tb || tb === box) continue;
+      if (!tb || tb === box || isNestedPair(box, tb)) continue;
       const key = `${box.x},${box.y}->${tb.x},${tb.y}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -1271,7 +1287,7 @@ function composeEdges(
     for (const c of el.children) {
       if (!memberKinds.has(c.kind) || !c.typedBy.length) continue;
       const tb = boxOfType(c, c.typedBy);
-      if (!tb || tb === owner) continue;
+      if (!tb || tb === owner || isNestedPair(owner, tb)) continue;
       const key = `${owner.x},${owner.y}->${tb.x},${tb.y}`;
       const label = (c.name ?? "") + (c.multiplicity ? " " + c.multiplicity : "");
       const entry = merged.get(key);
@@ -1316,7 +1332,7 @@ function importEdges(boxByEl: Map<SysMLElement, DiagramNode>): DiagramEdge[] {
       if (!first) continue;
       const t = resolvePath(el, first, c);
       const tb = t ? boxByEl.get(t) : undefined;
-      if (!tb || tb === box) continue;
+      if (!tb || tb === box || isNestedPair(box, tb)) continue;
       const key = `${box.x},${box.y}->${tb.x},${tb.y}`;
       if (seen.has(key)) continue;
       seen.add(key);
