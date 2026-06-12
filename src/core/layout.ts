@@ -260,6 +260,9 @@ export interface DiagramEdge {
   y2: number;
   /** manual routing waypoints between the endpoints (saved layout) */
   points?: { x: number; y: number }[];
+  /** endpoints pinned to a fixed border position (saved layout) */
+  pinnedA?: boolean;
+  pinnedB?: boolean;
   /** line rendering style (saved layout; default "straight") */
   style?: EdgeStyle;
   /** stable key for saved manual routing */
@@ -794,6 +797,19 @@ export function edgeRoutingBase(e: DiagramEdge): { x: number; y: number } | unde
   };
 }
 
+/** point on a box border given side + 0..1 position along it */
+export function borderPoint(
+  box: { x: number; y: number; w: number; h: number },
+  side: PortSide,
+  t: number
+): { x: number; y: number } {
+  const tt = Math.min(0.97, Math.max(0.03, t));
+  if (side === "left") return { x: box.x, y: box.y + tt * box.h };
+  if (side === "right") return { x: box.x + box.w, y: box.y + tt * box.h };
+  if (side === "top") return { x: box.x + tt * box.w, y: box.y };
+  return { x: box.x + tt * box.w, y: box.y + box.h };
+}
+
 function applyEdgeRouting(edges: DiagramEdge[], options: LayoutOptions): void {
   const counters = new Map<string, number>();
   for (const e of edges) {
@@ -817,6 +833,19 @@ function applyEdgeRouting(edges: DiagramEdge[], options: LayoutOptions): void {
       e.y1 = p1.y;
       e.x2 = p2.x;
       e.y2 = p2.y;
+    }
+    // manually pinned endpoints override the automatic anchors
+    if (entry?.anchorA && e.a) {
+      const p = borderPoint(e.a, entry.anchorA.side, entry.anchorA.t);
+      e.x1 = p.x;
+      e.y1 = p.y;
+      e.pinnedA = true;
+    }
+    if (entry?.anchorB && e.b) {
+      const p = borderPoint(e.b, entry.anchorB.side, entry.anchorB.t);
+      e.x2 = p.x;
+      e.y2 = p.y;
+      e.pinnedB = true;
     }
   }
 }
@@ -892,6 +921,9 @@ export interface LayoutOffsets {
     wp?: { x: number; y: number }[];
     /** true when wp is relative to the endpoint-box midpoint (follows moves) */
     rel?: boolean;
+    /** pinned edge endpoints: border side + 0..1 position (edge entries only) */
+    anchorA?: { side: PortSide; t: number };
+    anchorB?: { side: PortSide; t: number };
     /** line style override (edge entries only) */
     style?: EdgeStyle;
   };

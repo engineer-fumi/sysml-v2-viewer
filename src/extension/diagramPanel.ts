@@ -60,6 +60,9 @@ type LayoutEntry = {
   wp?: { x: number; y: number }[];
   /** true when wp is relative to the endpoint boxes */
   rel?: boolean;
+  /** pinned edge endpoints: border side + 0..1 position along it */
+  anchorA?: { side: "left" | "right" | "top" | "bottom"; t: number };
+  anchorB?: { side: "left" | "right" | "top" | "bottom"; t: number };
   /** line style override (straight / ortho / curve) */
   style?: "straight" | "ortho" | "curve";
 };
@@ -241,9 +244,10 @@ export class DiagramPanel {
       const hasPort = v.side !== undefined && v.t !== undefined;
       const hasRoute = Array.isArray(v.wp) && v.wp.length > 0;
       const hasStyle = v.style === "ortho" || v.style === "curve";
+      const hasAnchor = v.anchorA !== undefined || v.anchorB !== undefined;
       if (
         Math.abs(v.dx) > 0.5 || Math.abs(v.dy) > 0.5 || dw > 0.5 || dh > 0.5 ||
-        hasPort || hasRoute || hasStyle
+        hasPort || hasRoute || hasStyle || hasAnchor
       ) {
         cleaned[k] = {
           dx: Math.round(v.dx),
@@ -258,6 +262,8 @@ export class DiagramPanel {
               }
             : {}),
           ...(hasStyle ? { style: v.style } : {}),
+          ...(v.anchorA ? { anchorA: v.anchorA } : {}),
+          ...(v.anchorB ? { anchorB: v.anchorB } : {}),
         };
       }
     }

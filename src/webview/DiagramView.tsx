@@ -41,6 +41,10 @@ interface Interaction {
   liveEdge?: { key: string; points: { x: number; y: number }[] } | null;
   /** open the context menu for an edge (optionally on a waypoint) */
   onEdgeContextMenu: (edge: DiagramEdge, e: React.MouseEvent, waypointIndex?: number) => void;
+  /** start dragging an edge endpoint along its box border */
+  onEndpointMouseDown: (edge: DiagramEdge, which: "a" | "b", e: React.MouseEvent) => void;
+  /** drag-in-progress endpoint position (ghost) */
+  liveAnchor?: { key: string; which: "a" | "b"; x: number; y: number } | null;
   /** open the context menu for a box / actor / port element */
   onNodeContextMenu: (el: SysMLElement, e: React.MouseEvent, named: boolean) => void;
 }
@@ -76,6 +80,8 @@ interface Props {
   onRouteEdge: (key: string, points: { x: number; y: number }[]) => void;
   /** change the line style of an edge */
   onEdgeStyle: (key: string, style: EdgeStyle) => void;
+  /** pin an edge endpoint to a border position; null side clears both pins */
+  onAnchorEdge: (key: string, which: "a" | "b" | null, side?: PortSide, t?: number) => void;
   /** delete the model element behind a box / line */
   onDeleteElement: (el: SysMLElement) => void;
   /** enter connect mode with the given element as the source */
@@ -460,7 +466,10 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
   // full path: source anchor, manual waypoints (live ones while dragging), target anchor
   const live = it.liveEdge && edge.key && it.liveEdge.key === edge.key ? it.liveEdge.points : undefined;
   const waypoints = live ?? edge.points ?? [];
-  const pts = [{ x: edge.x1, y: edge.y1 }, ...waypoints, { x: edge.x2, y: edge.y2 }];
+  const la = it.liveAnchor && edge.key && it.liveAnchor.key === edge.key ? it.liveAnchor : undefined;
+  const start = la?.which === "a" ? { x: la.x, y: la.y } : { x: edge.x1, y: edge.y1 };
+  const end = la?.which === "b" ? { x: la.x, y: la.y } : { x: edge.x2, y: edge.y2 };
+  const pts = [start, ...waypoints, end];
   const midA = pts[Math.floor((pts.length - 1) / 2)];
   const midB = pts[Math.floor((pts.length - 1) / 2) + 1] ?? midA;
   const mx = (midA.x + midB.x) / 2;
@@ -527,6 +536,30 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
           <circle cx={p.x} cy={p.y} r={4} fill={color} stroke="#1e1e2e" strokeWidth={1} />
         </g>
       ))}
+      {isSelected && routable && (
+        <>
+          {(["a", "b"] as const).map((which) => {
+            const p = which === "a" ? pts[0] : pts[pts.length - 1];
+            return (
+              <rect
+                key={which}
+                x={p.x - 5}
+                y={p.y - 5}
+                width={10}
+                height={10}
+                fill="#f9e2af"
+                stroke="#1e1e2e"
+                strokeWidth={1}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  it.onEndpointMouseDown(edge, which, e);
+                }}
+                style={{ cursor: "move" }}
+              />
+            );
+          })}
+        </>
+      )}
       {edge.label && (
         <text
           x={mx}
@@ -558,6 +591,7 @@ export function DiagramView({
   onMovePort,
   onRouteEdge,
   onEdgeStyle,
+  onAnchorEdge,
   onDeleteElement,
   onStartConnect,
   onBackgroundClick,
@@ -587,6 +621,17 @@ export function DiagramView({
   const [liveEdge, setLiveEdge] = useState<{
     key: string;
     points: { x: number; y: number }[];
+  } | null>(null);
+  const anchorDragRef = useRef<{
+    key: string;
+    which: "a" | "b";
+    box: { x: number; y: number; w: number; h: number };
+  } | null>(null);
+  const [liveAnchor, setLiveAnchor] = useState<{
+    key: string;
+    which: "a" | "b";
+    x: number;
+    y: number;
   } | null>(null);
   const downPosRef = useRef<{ x: number; y: number } | null>(null);
   /** swallow the click that the browser fires right after a drag/resize */
@@ -711,6 +756,18 @@ export function DiagramView({
     };
   };
 
+  /** start dragging an edge endpoint along the border of its box */
+  const onEndpointMouseDown = (edge: DiagramEdge, which: "a" | "b", _e: React.MouseEvent) => {
+    if (!edge.key) return;
+    const box = which === "a" ? edge.a : edge.b;
+    if (!box) return;
+    anchorDragRef.current = {
+      key: edge.key,
+      which,
+      box: { x: box.x, y: box.y, w: box.w, h: box.h },
+    };
+  };
+
   /** start routing an edge: grab an existing waypoint, or drag the whole
    *  route. Waypoints are only ADDED via the context menu, never by drag. */
   const onEdgeMouseDown = (edge: DiagramEdge, e: React.MouseEvent, waypointIndex?: number) => {
@@ -723,8 +780,16 @@ export function DiagramView({
     if (waypointIndex !== undefined) {
       dragIndex = waypointIndex;
     } else {
-      // near an existing waypoint: grab it; otherwise translate the route
       const grabRadius = 10 / view.scale;
+      // near an endpoint: move the endpoint along its box border instead
+      const endpointR = 14 / view.scale;
+      const dA = Math.hypot(edge.x1 - m.x, edge.y1 - m.y);
+      const dB = Math.hypot(edge.x2 - m.x, edge.y2 - m.y);
+      if (Math.min(dA, dB) <= endpointR) {
+        onEndpointMouseDown(edge, dA <= dB ? "a" : "b", e);
+        return;
+      }
+      // near an existing waypoint: grab it; otherwise translate the route
       let nearest = -1;
       let nearestD = grabRadius;
       points.forEach((p, i) => {
@@ -772,6 +837,13 @@ export function DiagramView({
   };
 
   const onMouseMove = (e: React.MouseEvent) => {
+    const ad = anchorDragRef.current;
+    if (ad) {
+      const m = toDiagram(e.clientX, e.clientY);
+      const c = clampToBorder(ad.box, m.x, m.y);
+      setLiveAnchor({ key: ad.key, which: ad.which, x: c.x, y: c.y });
+      return;
+    }
     const ed = edgeDragRef.current;
     if (ed) {
       const m = toDiagram(e.clientX, e.clientY);
@@ -833,6 +905,12 @@ export function DiagramView({
       onMovePort(pd.key, c.side, c.t);
       suppressClickRef.current = true;
     }
+    const ad = anchorDragRef.current;
+    if (ad && liveAnchor) {
+      const c = clampToBorder(ad.box, liveAnchor.x, liveAnchor.y);
+      onAnchorEdge(ad.key, ad.which, c.side, c.t);
+      suppressClickRef.current = true;
+    }
     const ed = edgeDragRef.current;
     if (ed && liveEdge) {
       // waypoints are persisted relative to the endpoint boxes so they
@@ -851,6 +929,8 @@ export function DiagramView({
     setLivePort(null);
     edgeDragRef.current = null;
     setLiveEdge(null);
+    anchorDragRef.current = null;
+    setLiveAnchor(null);
     panRef.current = null;
   };
 
@@ -946,6 +1026,11 @@ export function DiagramView({
         disabled: points.length === 0,
         action: () => onRouteEdge(edge.key!, []),
       },
+      {
+        label: "端点の固定を解除",
+        disabled: !edge.pinnedA && !edge.pinnedB,
+        action: () => onAnchorEdge(edge.key!, null),
+      },
       { label: "", separator: true },
       ...EDGE_STYLES.map((st) => ({
         label: `線種: ${st.label}`,
@@ -996,6 +1081,8 @@ export function DiagramView({
     portKey: (owner, port) => portOffsetKey(keyOf, owner, port),
     livePort,
     onEdgeMouseDown,
+    onEndpointMouseDown,
+    liveAnchor,
     onEdgeContextMenu,
     onNodeContextMenu,
     onWaypointRemove: (edge, index) => {

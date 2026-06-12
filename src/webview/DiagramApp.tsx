@@ -426,6 +426,29 @@ export function DiagramApp() {
     vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
   };
 
+  const handleAnchorEdge = (
+    key: string,
+    which: "a" | "b" | null,
+    side?: PortSide,
+    t?: number
+  ) => {
+    pushUndo();
+    const cur = offsets[key] ?? { dx: 0, dy: 0 };
+    const next = { ...offsets };
+    if (which === null) {
+      // clear both pins
+      const { anchorA: _a, anchorB: _b, ...rest } = cur;
+      next[key] = rest;
+    } else if (side !== undefined && t !== undefined) {
+      next[key] = {
+        ...cur,
+        [which === "a" ? "anchorA" : "anchorB"]: { side, t: Math.round(t * 1000) / 1000 },
+      };
+    }
+    setLayouts((prev) => ({ ...prev, [layoutKey]: next }));
+    vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
+  };
+
   const handleEdgeStyle = (key: string, style: EdgeStyle) => {
     pushUndo();
     const cur = offsets[key] ?? { dx: 0, dy: 0 };
@@ -556,6 +579,7 @@ export function DiagramApp() {
         onMovePort={handleMovePort}
         onRouteEdge={handleRouteEdge}
         onEdgeStyle={handleEdgeStyle}
+        onAnchorEdge={handleAnchorEdge}
         onDeleteElement={deleteElement}
         onStartConnect={startConnect}
         onBackgroundClick={handleBackgroundClick}
