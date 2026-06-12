@@ -464,25 +464,17 @@ function arrangeChildren(
     }
 
     // manual offsets (saved diagram layout) – any child may be moved freely;
-    // the parent grows to keep containing its children
+    // the parent grows right/down to keep containing it. A child dragged past
+    // the top/left inner edge is clamped THERE (shifting all siblings to
+    // compensate made the whole content jump on drag)
     if (opts.offsets && opts.keyOf) {
-      let minX = 0;
-      let minY = 0;
       children.forEach((c, i) => {
         const o = opts.offsets![opts.keyOf!(c.el)];
         if (o) {
-          childPos[i].x += o.dx;
-          childPos[i].y += o.dy;
+          childPos[i].x = Math.max(0, childPos[i].x + o.dx);
+          childPos[i].y = Math.max(0, childPos[i].y + o.dy);
         }
-        minX = Math.min(minX, childPos[i].x);
-        minY = Math.min(minY, childPos[i].y);
       });
-      if (minX < 0 || minY < 0) {
-        for (const p of childPos) {
-          p.x -= minX;
-          p.y -= minY;
-        }
-      }
     }
     children.forEach((c, i) => {
       innerW = Math.max(innerW, childPos[i].x + c.size.w);
@@ -1102,18 +1094,17 @@ export function layoutDiagram(root: SysMLElement, options: LayoutOptions = {}): 
     if (n) n.kindLabel = "subject";
   }
 
-  // apply manual offsets to top-level boxes (saved diagram layout)
+  // apply manual offsets to top-level boxes (saved diagram layout); each box
+  // is individually clamped to positive coordinates so dragging one box past
+  // the origin never shifts the others
   const { offsets, keyOf } = options;
   if (offsets && keyOf) {
     for (const n of nodes) {
       const o = offsets[keyOf(n.el)];
       if (o) shiftNode(n, o.dx, o.dy);
-    }
-    // normalize so everything stays in positive coordinates
-    const minX = Math.min(GAP, ...nodes.map((n) => n.x));
-    const minY = Math.min(GAP, ...nodes.map((n) => n.y));
-    if (minX < GAP || minY < GAP) {
-      for (const n of nodes) shiftNode(n, GAP - minX, GAP - minY);
+      const cx = Math.max(0, GAP - n.x);
+      const cy = Math.max(0, GAP - n.y);
+      if (cx || cy) shiftNode(n, cx, cy);
     }
   }
 
