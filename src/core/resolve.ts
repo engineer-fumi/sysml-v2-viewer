@@ -16,19 +16,24 @@ export class Resolver {
 
   constructor(private root: SysMLElement) {}
 
-  /** Resolve a (possibly dotted / qualified) reference from a scope. */
-  resolve(scope: SysMLElement, path: string): SysMLElement | undefined {
+  /**
+   * Resolve a (possibly dotted / qualified) reference from a scope.
+   * `exclude` skips one element in the first-segment lookup — reference
+   * usages such as `perform x` carry the target as their own name and must
+   * not resolve to themselves.
+   */
+  resolve(scope: SysMLElement, path: string, exclude?: SysMLElement): SysMLElement | undefined {
     // conjugated references (~Port) resolve to the original type
     const segments = path.replace(/^~/, "").split(/::|\./).filter(Boolean);
     if (!segments.length) return undefined;
     if (segments[0] === "*" || segments[0] === "**") return undefined;
 
-    let cur = this.lookupInScopes(scope, segments[0]);
+    let cur = this.lookupInScopes(scope, segments[0], exclude);
     if (!cur) return undefined;
     for (let i = 1; i < segments.length; i++) {
       const seg = segments[i];
       if (seg === "*" || seg === "**") return cur; // import wildcard – resolved enough
-      const next = this.lookupMember(cur, seg, new Set());
+      const next = this.lookupMember(cur, seg, new Set(), exclude);
       if (!next) return undefined;
       cur = next;
     }
@@ -36,15 +41,19 @@ export class Resolver {
   }
 
   /** First segment: walk the scope chain upwards. */
-  private lookupInScopes(scope: SysMLElement, name: string): SysMLElement | undefined {
+  private lookupInScopes(
+    scope: SysMLElement,
+    name: string,
+    exclude?: SysMLElement
+  ): SysMLElement | undefined {
     for (let s: SysMLElement | undefined = scope; s; s = s.parent) {
       // own + inherited members of this scope
-      const m = this.lookupMember(s, name, new Set());
+      const m = this.lookupMember(s, name, new Set(), exclude);
       if (m) return m;
       // imports declared in this scope
       for (const imp of this.importsOf(s)) {
         if (imp.star) {
-          const viaStar = this.lookupLocal(imp.target, name);
+          const viaStar = this.lookupLocal(imp.target, name, exclude);
           if (viaStar) return viaStar;
         } else if (imp.target.name === name || imp.target.shortName === name) {
           return imp.target;
@@ -53,15 +62,20 @@ export class Resolver {
     }
     // global: top-level members of every file (incl. the standard library)
     for (const file of this.root.children) {
-      const m = this.lookupLocal(file, name);
+      const m = this.lookupLocal(file, name, exclude);
       if (m) return m;
     }
     return undefined;
   }
 
   /** Direct child of `scope` named `name` (following aliases). */
-  private lookupLocal(scope: SysMLElement, name: string): SysMLElement | undefined {
+  private lookupLocal(
+    scope: SysMLElement,
+    name: string,
+    exclude?: SysMLElement
+  ): SysMLElement | undefined {
     for (const c of scope.children) {
+      if (c === exclude) continue;
       if (c.name === name || c.shortName === name) {
         if (c.kind === "alias" && c.target) {
           return this.resolve(scope, c.target) ?? c;
@@ -76,14 +90,15 @@ export class Resolver {
   lookupMember(
     el: SysMLElement,
     name: string,
-    seen: Set<SysMLElement>
+    seen: Set<SysMLElement>,
+    exclude?: SysMLElement
   ): SysMLElement | undefined {
     if (seen.has(el)) return undefined;
     seen.add(el);
-    const direct = this.lookupLocal(el, name);
+    const direct = this.lookupLocal(el, name, exclude);
     if (direct) return direct;
     for (const g of this.generalsOf(el, seen)) {
-      const m = this.lookupMember(g, name, seen);
+      const m = this.lookupMember(g, name, seen, exclude);
       if (m) return m;
     }
     return undefined;

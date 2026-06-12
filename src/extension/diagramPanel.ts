@@ -58,6 +58,8 @@ type LayoutEntry = {
   t?: number;
   /** manual edge routing waypoints */
   wp?: { x: number; y: number }[];
+  /** true when wp is relative to the endpoint boxes */
+  rel?: boolean;
   /** line style override (straight / ortho / curve) */
   style?: "straight" | "ortho" | "curve";
 };
@@ -250,7 +252,10 @@ export class DiagramPanel {
           ...(dh > 0 ? { dh } : {}),
           ...(hasPort ? { side: v.side, t: Math.round(v.t! * 1000) / 1000 } : {}),
           ...(hasRoute
-            ? { wp: v.wp!.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })) }
+            ? {
+                wp: v.wp!.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })),
+                ...(v.rel ? { rel: true } : {}),
+              }
             : {}),
           ...(hasStyle ? { style: v.style } : {}),
         };

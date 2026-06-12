@@ -118,6 +118,8 @@
     "check": "tsc -p tsconfig.extension.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
     "build": "npm run check && node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
+    "test:core": "esbuild test/core.ts --bundle --platform=node --outfile=dist/core-test.cjs --log-level=error && node dist/core-test.cjs",
+    "test:vscode": "node test/runTest.mjs",
     "package": "npm run build && vsce package --allow-missing-repository"
   },
   "devDependencies": {

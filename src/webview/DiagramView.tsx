@@ -7,6 +7,7 @@ import {
   EdgeStyle,
   LayoutOffsets,
   PortSide,
+  edgeRoutingBase,
   layoutDiagram,
   portOffsetKey,
 } from "../core/layout";
@@ -496,6 +497,7 @@ export function DiagramView({
     key: string;
     points: { x: number; y: number }[];
     dragIndex: number;
+    base: { x: number; y: number };
   } | null>(null);
   const [liveEdge, setLiveEdge] = useState<{
     key: string;
@@ -634,7 +636,9 @@ export function DiagramView({
       points.splice(best, 0, m);
       dragIndex = best;
     }
-    edgeDragRef.current = { key: edge.key, points, dragIndex };
+    const base = edgeRoutingBase(edge);
+    if (!base) return;
+    edgeDragRef.current = { key: edge.key, points, dragIndex, base };
     setLiveEdge({ key: edge.key, points });
   };
 
@@ -714,7 +718,12 @@ export function DiagramView({
     }
     const ed = edgeDragRef.current;
     if (ed && liveEdge) {
-      onRouteEdge(ed.key, liveEdge.points);
+      // waypoints are persisted relative to the endpoint boxes so they
+      // follow when the boxes are moved later
+      onRouteEdge(
+        ed.key,
+        liveEdge.points.map((p) => ({ x: p.x - ed.base.x, y: p.y - ed.base.y }))
+      );
       suppressClickRef.current = true;
     }
     boxDragRef.current = null;
@@ -779,7 +788,11 @@ export function DiagramView({
     onEdgeMouseDown,
     onWaypointRemove: (edge, index) => {
       if (!edge.key) return;
-      const points = (edge.points ?? []).filter((_, i) => i !== index);
+      const base = edgeRoutingBase(edge);
+      if (!base) return;
+      const points = (edge.points ?? [])
+        .filter((_, i) => i !== index)
+        .map((p) => ({ x: p.x - base.x, y: p.y - base.y }));
       onRouteEdge(edge.key, points);
     },
     liveEdge,

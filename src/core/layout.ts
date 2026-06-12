@@ -1,4 +1,5 @@
 import { SysMLElement, createElement, walk } from "./ast";
+import { Resolver } from "./resolve";
 
 // ---- diagram kinds ------------------------------------------------------
 
@@ -711,6 +712,19 @@ function findByName(
 }
 
 /**
+ * Scope-aware resolver for the current layout pass. Set by layoutDiagram /
+ * layoutSequence; layout is synchronous, so a module-level slot is safe.
+ * Falls back to the naive search when unset (defensive).
+ */
+let currentResolver: Resolver | undefined;
+
+function topRootOf(el: SysMLElement): SysMLElement {
+  let r = el;
+  while (r.parent) r = r.parent;
+  return r;
+}
+
+/**
  * `exclude` skips the referencing element itself: reference usages such as
  * `perform OperateRobot` carry the target as their own name, so a naive
  * search would resolve to the reference instead of the declaration.
@@ -720,6 +734,13 @@ function resolvePath(
   path: string,
   exclude?: SysMLElement
 ): SysMLElement | undefined {
+  // scope-aware resolution (imports / inheritance / nearest scope first);
+  // names may exist in several packages, so plain BFS picks wrong targets
+  if (currentResolver) {
+    const r = currentResolver.resolve(scope, path, exclude);
+    if (r) return r;
+  }
+
   const segments = path.split(/::|\./).filter(Boolean);
   if (!segments.length) return undefined;
 
@@ -760,6 +781,19 @@ function rectAnchor(a: DiagramNode, b: DiagramNode): { x: number; y: number } {
  * Assign stable keys to edges and apply saved manual routing (waypoints).
  * The key is keyOf(el) + edge kind + a per-element sequence number.
  */
+/**
+ * Reference point for an edge's relative waypoints: the midpoint of the two
+ * endpoint box centres. Waypoints stored relative to it follow the boxes
+ * when they are moved.
+ */
+export function edgeRoutingBase(e: DiagramEdge): { x: number; y: number } | undefined {
+  if (!e.a || !e.b) return undefined;
+  return {
+    x: (e.a.x + e.a.w / 2 + e.b.x + e.b.w / 2) / 2,
+    y: (e.a.y + e.a.h / 2 + e.b.y + e.b.h / 2) / 2,
+  };
+}
+
 function applyEdgeRouting(edges: DiagramEdge[], options: LayoutOptions): void {
   const counters = new Map<string, number>();
   for (const e of edges) {
@@ -770,11 +804,15 @@ function applyEdgeRouting(edges: DiagramEdge[], options: LayoutOptions): void {
     const entry = options.offsets?.[e.key];
     if (entry?.style) e.style = entry.style;
     const wp = entry?.wp;
-    if (wp?.length && e.a && e.b) {
-      e.points = wp.map((p) => ({ x: p.x, y: p.y }));
+    const origin = edgeRoutingBase(e);
+    if (wp?.length && origin) {
+      // `rel` waypoints follow the endpoint boxes; absolute ones are legacy
+      e.points = entry!.rel
+        ? wp.map((p) => ({ x: origin.x + p.x, y: origin.y + p.y }))
+        : wp.map((p) => ({ x: p.x, y: p.y }));
       // re-anchor the endpoints towards the first / last waypoint
-      const p1 = anchorTowards(e.a, e.points[0]);
-      const p2 = anchorTowards(e.b, e.points[e.points.length - 1]);
+      const p1 = anchorTowards(e.a!, e.points[0]);
+      const p2 = anchorTowards(e.b!, e.points[e.points.length - 1]);
       e.x1 = p1.x;
       e.y1 = p1.y;
       e.x2 = p2.x;
@@ -852,6 +890,8 @@ export interface LayoutOffsets {
     t?: number;
     /** manual edge routing waypoints (edge entries only) */
     wp?: { x: number; y: number }[];
+    /** true when wp is relative to the endpoint-box midpoint (follows moves) */
+    rel?: boolean;
     /** line style override (edge entries only) */
     style?: EdgeStyle;
   };
@@ -881,6 +921,7 @@ function shiftNode(node: DiagramNode, dx: number, dy: number): void {
 }
 
 export function layoutDiagram(root: SysMLElement, options: LayoutOptions = {}): DiagramLayout {
+  currentResolver = new Resolver(topRootOf(root));
   const kind = options.kind ?? "general";
   if (kind === "seq") return layoutSequence(root, options);
 
@@ -1059,8 +1100,11 @@ export function layoutDiagram(root: SysMLElement, options: LayoutOptions = {}): 
     if (!fig) continue;
     const seen = new Set<string>();
     for (const a of els) {
+      // no isNestedPair guard here: actor members are children of their use
+      // case in the MODEL, but the figure is hoisted to the top level in the
+      // diagram, so the association line is always meaningful
       const ub = nearestBox(a.parent, boxByEl);
-      if (!ub || ub === fig || isNestedPair(fig, ub)) continue;
+      if (!ub || ub === fig) continue;
       const key = `${ub.x},${ub.y}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -1103,12 +1147,7 @@ function resolveEndBox(
   const segments = path.split(/::|\./).filter(Boolean);
   if (!segments.length) return undefined;
 
-  let cur: SysMLElement | undefined;
-  let s: SysMLElement | undefined = scope;
-  while (s && !cur) {
-    cur = findByName(s, segments[0]);
-    s = s.parent;
-  }
+  let cur = resolvePath(scope, segments[0]);
   if (!cur) return undefined;
   for (let i = 1; i < segments.length; i++) {
     const next = findByName(cur, segments[i]);
@@ -1391,6 +1430,22 @@ function layoutSequence(root: SysMLElement, options: LayoutOptions): DiagramLayo
     to: SysMLElement;
     label?: string;
   }
+  // resolve an end path while staying inside the usage tree: the first
+  // segment is scope-resolved, later segments stop at the deepest local
+  // element (full inheritance resolution would leave the lifeline's subtree)
+  const resolveUsageChain = (scope: SysMLElement, path: string): SysMLElement | undefined => {
+    const segments = path.split(/::|\./).filter(Boolean);
+    if (!segments.length) return undefined;
+    let cur = resolvePath(scope, segments[0]);
+    if (!cur) return undefined;
+    for (let i = 1; i < segments.length; i++) {
+      const next = findByName(cur, segments[i]);
+      if (!next) break;
+      cur = next;
+    }
+    return cur;
+  };
+
   // messages are item flows (`flow` / `message`) between parts; successions
   // and transitions are control flow and belong to the activity / state views
   const computeMsgs = (els: SysMLElement[]): Msg[] => {
@@ -1407,8 +1462,8 @@ function layoutSequence(root: SysMLElement, options: LayoutOptions): DiagramLayo
     walk(root, (el) => {
       if (!el.parent) return;
       if (el.kind !== "flow" || (el.ends?.length ?? 0) < 2) return;
-      const a = resolvePath(el.parent, el.ends![0].path);
-      const b = resolvePath(el.parent, el.ends![1].path);
+      const a = resolveUsageChain(el.parent, el.ends![0].path);
+      const b = resolveUsageChain(el.parent, el.ends![1].path);
       const label = el.typedBy.length ? el.typedBy.join(",") : el.name;
       const from = ownerLifeline(a);
       const to = ownerLifeline(b);

@@ -339,6 +339,7 @@ export function DiagramApp() {
       next[key] = {
         ...(cur ?? { dx: 0, dy: 0 }),
         wp: points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })),
+        rel: true, // relative to the endpoint boxes (follows box moves)
       };
     } else if (cur?.style && cur.style !== "straight") {
       // keep the line-style override even when the waypoints are cleared
