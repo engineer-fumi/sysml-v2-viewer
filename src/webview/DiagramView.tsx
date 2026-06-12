@@ -97,6 +97,7 @@ const EDGE_COLOR: Record<string, string> = {
   satisfy: "#f38ba8",
   perform: "#b4befe",
   assoc: "#9399b2",
+  import: "#7f849c",
 };
 
 /** kinds whose end marker is custom (hollow triangle / diamond), not the generic arrow */

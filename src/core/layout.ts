@@ -104,6 +104,10 @@ interface ViewSpec {
   specializeEdges?: boolean;
   /** synthesize composition edges def -> type-of-member-usage (BDD) */
   composeEdges?: boolean;
+  /** synthesize «import» dependency edges between package boxes */
+  importEdges?: boolean;
+  /** when false, package boxes show no member text lines (BDD) */
+  packageText?: boolean;
   /** reference usages (satisfy / perform) drawn as edges */
   refEdges?: Set<string>;
   /**
@@ -134,6 +138,8 @@ const VIEW_SPECS: Record<Exclude<DiagramKind, "seq">, ViewSpec> = {
     ports: false,
     specializeEdges: true,
     composeEdges: true,
+    importEdges: true,
+    packageText: false,
   },
   // no package containers: composite parts are hoisted to the diagram top
   // level so the view shows block internals, not the package hierarchy
@@ -245,7 +251,8 @@ export interface DiagramEdge {
   el: SysMLElement;
   kind:
     | "connect" | "flow" | "bind" | "transition" | "interface" | "connection"
-    | "allocation" | "specialize" | "compose" | "satisfy" | "perform" | "assoc";
+    | "allocation" | "specialize" | "compose" | "satisfy" | "perform" | "assoc"
+    | "import";
   x1: number;
   y1: number;
   x2: number;
@@ -523,19 +530,23 @@ function measure(el: SysMLElement, depth: number, ctx: ViewContext): RelNode {
 
   if (spec.doc && el.doc) attributes.push(...wrapDoc(el.doc));
 
+  // BDD: package boxes are pure containers — member text lines (imports,
+  // package-level usages) would read as diagram content, so they are hidden
+  const suppressText = spec.packageText === false && PACKAGE_KINDS.includes(el.kind);
+
   for (const c of el.children) {
     if (isEdgeElement(c) || (spec.refEdges?.has(c.kind) ?? false)) continue;
     // actor members are hoisted to the top level (rendered by layoutDiagram)
     if (spec.hoistActors && (spec.extraPrimary?.(c) ?? false)) continue;
     if (PORT_KINDS.has(c.kind)) {
       if (spec.ports) ports.push(c);
-      else {
+      else if (!suppressText) {
         const line = attributeLine(c);
         if (line.trim()) attributes.push(line);
       }
     } else if (ctx.asBox(c) && depth < 6) {
       children.push(measure(c, depth + 1, ctx));
-    } else if (spec.text.has(c.kind) || c.kind === "unknown") {
+    } else if (!suppressText && (spec.text.has(c.kind) || c.kind === "unknown")) {
       const line = attributeLine(c);
       if (line.trim()) attributes.push(line);
     }
@@ -1023,6 +1034,7 @@ export function layoutDiagram(root: SysMLElement, options: LayoutOptions = {}): 
 
   if (spec.specializeEdges) edges.push(...specializeEdges(boxByEl));
   if (spec.composeEdges) edges.push(...composeEdges(root, boxByEl));
+  if (spec.importEdges) edges.push(...importEdges(boxByEl));
 
   // every actor member keeps an association line from the merged figure to
   // its owning use case
@@ -1288,6 +1300,42 @@ function composeEdges(
       arrow: false,
       dashed: false,
     });
+  }
+  return edges;
+}
+
+/** «import» dependency edges between rendered package boxes */
+function importEdges(boxByEl: Map<SysMLElement, DiagramNode>): DiagramEdge[] {
+  const edges: DiagramEdge[] = [];
+  const seen = new Set<string>();
+  for (const [el, box] of boxByEl) {
+    if (!PACKAGE_KINDS.includes(el.kind)) continue;
+    for (const c of el.children) {
+      if (c.kind !== "import" || !c.target) continue;
+      const first = c.target.split(/::|\./).filter(Boolean)[0];
+      if (!first) continue;
+      const t = resolvePath(el, first, c);
+      const tb = t ? boxByEl.get(t) : undefined;
+      if (!tb || tb === box) continue;
+      const key = `${box.x},${box.y}->${tb.x},${tb.y}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const p1 = rectAnchor(box, tb);
+      const p2 = rectAnchor(tb, box);
+      edges.push({
+        el: c,
+        kind: "import",
+        x1: p1.x,
+        y1: p1.y,
+        x2: p2.x,
+        y2: p2.y,
+        a: box,
+        b: tb,
+        label: "«import»",
+        arrow: true,
+        dashed: true,
+      });
+    }
   }
   return edges;
 }
