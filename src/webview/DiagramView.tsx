@@ -418,6 +418,8 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
   const my = (midA.y + midB.y) / 2;
   const d = pathFor(pts, edge.style ?? "straight");
   const routable = it.mode === "select" && !!edge.key && !!edge.a && !!edge.b;
+  // dragging only does something when the line has waypoints to move
+  const draggableLine = routable && waypoints.length > 0;
   return (
     <g
       onClick={(e) => {
@@ -425,7 +427,7 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
         it.onClick(edge.el);
       }}
       onContextMenu={(e) => it.onEdgeContextMenu(edge, e)}
-      style={{ cursor: routable ? "move" : "pointer" }}
+      style={{ cursor: draggableLine ? "move" : "pointer" }}
     >
       <path
         d={d}
@@ -525,7 +527,12 @@ export function DiagramView({
   const edgeDragRef = useRef<{
     key: string;
     points: { x: number; y: number }[];
+    /** waypoint being dragged; -1 = translate the whole route */
     dragIndex: number;
+    /** original points (translate mode) */
+    orig: { x: number; y: number }[];
+    /** drag start in diagram coordinates (translate mode) */
+    start: { x: number; y: number };
     base: { x: number; y: number };
   } | null>(null);
   const [liveEdge, setLiveEdge] = useState<{
@@ -655,18 +662,19 @@ export function DiagramView({
     };
   };
 
-  /** start routing an edge: grab an existing waypoint, or insert one at the
-   *  nearest position on the line */
+  /** start routing an edge: grab an existing waypoint, or drag the whole
+   *  route. Waypoints are only ADDED via the context menu, never by drag. */
   const onEdgeMouseDown = (edge: DiagramEdge, e: React.MouseEvent, waypointIndex?: number) => {
     if (!edge.key) return;
+    const base = edgeRoutingBase(edge);
+    if (!base) return;
     const points = (edge.points ?? []).map((p) => ({ ...p }));
+    const m = toDiagram(e.clientX, e.clientY);
     let dragIndex: number;
     if (waypointIndex !== undefined) {
       dragIndex = waypointIndex;
     } else {
-      const m = toDiagram(e.clientX, e.clientY);
-      // clicking near an existing waypoint grabs it (instead of piling up
-      // new waypoints on every drag)
+      // near an existing waypoint: grab it; otherwise translate the route
       const grabRadius = 10 / view.scale;
       let nearest = -1;
       let nearestD = grabRadius;
@@ -679,25 +687,20 @@ export function DiagramView({
       });
       if (nearest >= 0) {
         dragIndex = nearest;
+      } else if (points.length) {
+        dragIndex = -1; // move all waypoints together
       } else {
-        // otherwise insert a waypoint on the closest segment
-        const pts = [{ x: edge.x1, y: edge.y1 }, ...points, { x: edge.x2, y: edge.y2 }];
-        let best = 0;
-        let bestD = Infinity;
-        for (let i = 0; i < pts.length - 1; i++) {
-          const d = distToSegment(m, pts[i], pts[i + 1]);
-          if (d < bestD) {
-            bestD = d;
-            best = i;
-          }
-        }
-        points.splice(best, 0, m);
-        dragIndex = best;
+        return; // straight line: nothing to drag, click selects
       }
     }
-    const base = edgeRoutingBase(edge);
-    if (!base) return;
-    edgeDragRef.current = { key: edge.key, points, dragIndex, base };
+    edgeDragRef.current = {
+      key: edge.key,
+      points,
+      dragIndex,
+      orig: points.map((p) => ({ ...p })),
+      start: m,
+      base,
+    };
     setLiveEdge({ key: edge.key, points });
   };
 
@@ -720,7 +723,10 @@ export function DiagramView({
     const ed = edgeDragRef.current;
     if (ed) {
       const m = toDiagram(e.clientX, e.clientY);
-      const points = ed.points.map((p, i) => (i === ed.dragIndex ? m : p));
+      const points =
+        ed.dragIndex >= 0
+          ? ed.points.map((p, i) => (i === ed.dragIndex ? m : p))
+          : ed.orig.map((p) => ({ x: p.x + (m.x - ed.start.x), y: p.y + (m.y - ed.start.y) }));
       ed.points = points;
       setLiveEdge({ key: ed.key, points });
       return;
