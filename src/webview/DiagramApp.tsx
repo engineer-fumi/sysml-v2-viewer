@@ -191,17 +191,7 @@ export function DiagramApp() {
         setMode("select");
         setConnectSource(undefined);
       }
-      if (e.key === "Delete" && selected && selected.kind !== "file" && selected.fileId !== undefined) {
-        vscode.postMessage({
-          type: "edit",
-          action: "delete",
-          fileId: selected.fileId,
-          start: selected.start,
-          end: selected.end,
-          label: selected.name ?? selected.kind,
-        });
-        setSelected(undefined);
-      }
+      if (e.key === "Delete" && selected) deleteElement(selected);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -242,6 +232,27 @@ export function DiagramApp() {
       source: pathFrom(scope, src),
       target: pathFrom(scope, tgt),
     });
+  };
+
+  /** remove the statement behind an element (box or line) from the model */
+  const deleteElement = (el: SysMLElement) => {
+    if (el.kind === "file" || el.fileId === undefined) return;
+    vscode.postMessage({
+      type: "edit",
+      action: "delete",
+      fileId: el.fileId,
+      start: el.start,
+      end: el.end,
+      label: el.name ?? el.kind,
+    });
+    setSelected(undefined);
+  };
+
+  /** enter connect mode with a pre-selected source (context menu) */
+  const startConnect = (el: SysMLElement) => {
+    setMode("connect");
+    setConnectSource(el);
+    setSelected(el);
   };
 
   const handleElementClick = (el: SysMLElement) => {
@@ -527,7 +538,7 @@ export function DiagramApp() {
               : "接続元をクリック"
             : mode.startsWith("add:")
               ? `${mode.slice(4)} の追加先をクリック — コンテナ or 空白 (図ルートへ) / Esc で取消`
-              : "ドラッグで配置変更 (port は辺に沿って / 線は中継点を追加・近くをつかむと移動) / 右下・右上ハンドルでサイズ変更 / ダブルクリックでリネーム (中継点は削除) / Delete で削除 / Cmd+Z で元に戻す"}
+              : "ドラッグで配置変更 / 右クリックでメニュー (接続・中継点・線種・削除) / 右下・右上ハンドルでサイズ変更 / Delete で選択中の要素・線を削除 / Cmd+Z で元に戻す"}
         </span>
       </div>
       <DiagramView
@@ -545,6 +556,8 @@ export function DiagramApp() {
         onMovePort={handleMovePort}
         onRouteEdge={handleRouteEdge}
         onEdgeStyle={handleEdgeStyle}
+        onDeleteElement={deleteElement}
+        onStartConnect={startConnect}
         onBackgroundClick={handleBackgroundClick}
       />
     </div>

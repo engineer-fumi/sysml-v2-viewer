@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DiagramEdge,
   DiagramKind,
@@ -39,6 +39,18 @@ interface Interaction {
   onWaypointRemove: (edge: DiagramEdge, index: number) => void;
   /** drag-in-progress edge routing */
   liveEdge?: { key: string; points: { x: number; y: number }[] } | null;
+  /** open the context menu for an edge (optionally on a waypoint) */
+  onEdgeContextMenu: (edge: DiagramEdge, e: React.MouseEvent, waypointIndex?: number) => void;
+  /** open the context menu for a box / actor / port element */
+  onNodeContextMenu: (el: SysMLElement, e: React.MouseEvent, named: boolean) => void;
+}
+
+interface MenuItem {
+  label: string;
+  action?: () => void;
+  disabled?: boolean;
+  checked?: boolean;
+  separator?: boolean;
 }
 
 interface Props {
@@ -64,9 +76,20 @@ interface Props {
   onRouteEdge: (key: string, points: { x: number; y: number }[]) => void;
   /** change the line style of an edge */
   onEdgeStyle: (key: string, style: EdgeStyle) => void;
+  /** delete the model element behind a box / line */
+  onDeleteElement: (el: SysMLElement) => void;
+  /** enter connect mode with the given element as the source */
+  onStartConnect: (el: SysMLElement) => void;
   /** click on empty canvas (used by the add modes) */
   onBackgroundClick?: () => void;
 }
+
+/** edge kinds whose underlying statement can be safely deleted from the menu
+ *  (synthesized edges like compose / specialize map to declarations) */
+const DELETABLE_EDGE_KINDS = new Set([
+  "connect", "flow", "bind", "transition", "interface", "connection",
+  "allocation", "satisfy", "perform", "import",
+]);
 
 const KIND_FILL: Record<string, string> = {
   package: "#2a2a3e",
@@ -137,6 +160,7 @@ function ActorFigure({ node, it }: { node: DiagramNode; it: Interaction }) {
           it.onBoxMouseDown(node, e);
         }
       }}
+      onContextMenu={(e) => it.onNodeContextMenu(node.el, e, !!node.el.name)}
       style={{ cursor: draggable ? "move" : "pointer" }}
     >
       <rect x={node.x} y={node.y} width={node.w} height={node.h} fill="transparent" />
@@ -184,6 +208,7 @@ function NodeBox({ node, it }: { node: DiagramNode; it: Interaction }) {
         it.onBoxMouseDown(node, e);
       }
     },
+    onContextMenu: (e: React.MouseEvent) => it.onNodeContextMenu(node.el, e, !!node.el.name),
     style: { cursor: draggable ? "move" : "pointer" } as React.CSSProperties,
   };
   return (
@@ -294,6 +319,7 @@ function NodeBox({ node, it }: { node: DiagramNode; it: Interaction }) {
                 it.onPortMouseDown(node, p, e);
               }
             }}
+            onContextMenu={(e) => it.onNodeContextMenu(p.el, e, false)}
             style={{ cursor: it.mode === "select" ? "move" : "pointer" }}
           >
             <rect
@@ -398,6 +424,7 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
         e.stopPropagation();
         it.onClick(edge.el);
       }}
+      onContextMenu={(e) => it.onEdgeContextMenu(edge, e)}
       style={{ cursor: routable ? "move" : "pointer" }}
     >
       <path
@@ -442,6 +469,7 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
             e.stopPropagation();
             it.onWaypointRemove(edge, i);
           }}
+          onContextMenu={(e) => it.onEdgeContextMenu(edge, e, i)}
           style={{ cursor: "move" }}
         >
           <circle cx={p.x} cy={p.y} r={9} fill="transparent" />
@@ -479,8 +507,12 @@ export function DiagramView({
   onMovePort,
   onRouteEdge,
   onEdgeStyle,
+  onDeleteElement,
+  onStartConnect,
   onBackgroundClick,
 }: Props) {
+  const viewRef = useRef<HTMLDivElement>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [view, setView] = useState({ tx: 20, ty: 20, scale: 1 });
   const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const boxDragRef = useRef<{ key: string; x: number; y: number } | null>(null);
@@ -511,6 +543,20 @@ export function DiagramView({
     fromTop: boolean;
   } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
 
   const effectiveOffsets = useMemo(() => {
     if (!liveDrag && !liveResize) return offsets;
@@ -781,6 +827,99 @@ export function DiagramView({
     URL.revokeObjectURL(a.href);
   };
 
+  // ---- context menus -------------------------------------------------------
+
+  const openMenu = (e: React.MouseEvent, items: MenuItem[]) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = viewRef.current?.getBoundingClientRect();
+    setMenu({ x: e.clientX - (rect?.left ?? 0), y: e.clientY - (rect?.top ?? 0), items });
+  };
+
+  /** commit edge waypoints, converting to box-relative coordinates */
+  const commitRoute = (edge: DiagramEdge, absPoints: { x: number; y: number }[]) => {
+    if (!edge.key) return;
+    const base = edgeRoutingBase(edge);
+    if (!base) return;
+    onRouteEdge(edge.key, absPoints.map((p) => ({ x: p.x - base.x, y: p.y - base.y })));
+  };
+
+  const onEdgeContextMenu = (edge: DiagramEdge, e: React.MouseEvent, waypointIndex?: number) => {
+    if (!edge.key) return;
+    const m = toDiagram(e.clientX, e.clientY);
+    const points = (edge.points ?? []).map((p) => ({ ...p }));
+    // a waypoint near the click can be removed directly
+    let nearIndex = waypointIndex ?? -1;
+    if (nearIndex < 0) {
+      const grabRadius = 12 / view.scale;
+      points.forEach((p, i) => {
+        if (Math.hypot(p.x - m.x, p.y - m.y) <= grabRadius) nearIndex = i;
+      });
+    }
+    const routable = !!edge.a && !!edge.b;
+    const style = edge.style ?? "straight";
+    const items: MenuItem[] = [
+      {
+        label: "中継点を追加",
+        disabled: !routable,
+        action: () => {
+          const pts = [{ x: edge.x1, y: edge.y1 }, ...points, { x: edge.x2, y: edge.y2 }];
+          let best = 0;
+          let bestD = Infinity;
+          for (let i = 0; i < pts.length - 1; i++) {
+            const d = distToSegment(m, pts[i], pts[i + 1]);
+            if (d < bestD) {
+              bestD = d;
+              best = i;
+            }
+          }
+          const next = [...points];
+          next.splice(best, 0, m);
+          commitRoute(edge, next);
+        },
+      },
+      {
+        label: "中継点を削除",
+        disabled: nearIndex < 0,
+        action: () => commitRoute(edge, points.filter((_, i) => i !== nearIndex)),
+      },
+      {
+        label: "経由点をすべてクリア",
+        disabled: points.length === 0,
+        action: () => onRouteEdge(edge.key!, []),
+      },
+      { label: "", separator: true },
+      ...EDGE_STYLES.map((st) => ({
+        label: `線種: ${st.label}`,
+        checked: style === st.value,
+        action: () => onEdgeStyle(edge.key!, st.value),
+      })),
+    ];
+    if (DELETABLE_EDGE_KINDS.has(edge.kind) && edge.el.fileId !== undefined) {
+      items.push(
+        { label: "", separator: true },
+        { label: "接続を削除 (モデルから)", action: () => onDeleteElement(edge.el) }
+      );
+    }
+    openMenu(e, items);
+  };
+
+  const onNodeContextMenu = (el: SysMLElement, e: React.MouseEvent, named: boolean) => {
+    const items: MenuItem[] = [
+      { label: "ここから接続 (connect)", action: () => onStartConnect(el) },
+    ];
+    if (named && el.fileId !== undefined) {
+      items.push({ label: "リネーム", action: () => onElementDoubleClick(el) });
+    }
+    if (el.fileId !== undefined && el.kind !== "file") {
+      items.push(
+        { label: "", separator: true },
+        { label: "削除 (モデルから)", action: () => onDeleteElement(el) }
+      );
+    }
+    openMenu(e, items);
+  };
+
   const interaction: Interaction = {
     mode,
     selected,
@@ -799,6 +938,8 @@ export function DiagramView({
     portKey: (owner, port) => portOffsetKey(keyOf, owner, port),
     livePort,
     onEdgeMouseDown,
+    onEdgeContextMenu,
+    onNodeContextMenu,
     onWaypointRemove: (edge, index) => {
       if (!edge.key) return;
       const base = edgeRoutingBase(edge);
@@ -820,7 +961,7 @@ export function DiagramView({
   ];
 
   return (
-    <div className="diagram-view">
+    <div className="diagram-view" ref={viewRef}>
       <div className="diagram-toolbar">
         <button onClick={fit} title="全体表示">⤢ Fit</button>
         <button onClick={() => setView({ tx: 20, ty: 20, scale: 1 })} title="リセット">100%</button>
@@ -860,6 +1001,7 @@ export function DiagramView({
         onMouseLeave={endDrag}
         onDoubleClick={fit}
         onClick={onSvgClick}
+        onContextMenu={(e) => e.preventDefault()}
       >
         <defs>
           {Object.entries(EDGE_COLOR)
@@ -917,6 +1059,32 @@ export function DiagramView({
           ))}
         </g>
       </svg>
+      {menu && (
+        <div
+          className="ctx-menu"
+          style={{ left: menu.x, top: menu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {menu.items.map((item, i) =>
+            item.separator ? (
+              <div key={i} className="ctx-menu-sep" />
+            ) : (
+              <button
+                key={i}
+                className="ctx-menu-item"
+                disabled={item.disabled}
+                onClick={() => {
+                  setMenu(null);
+                  item.action?.();
+                }}
+              >
+                <span className="ctx-menu-check">{item.checked ? "✓" : ""}</span>
+                {item.label}
+              </button>
+            )
+          )}
+        </div>
+      )}
       {layout.nodes.length === 0 && (
         <div className="diagram-empty">
           この図の種類に表示できる要素がありません。<br />
