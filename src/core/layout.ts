@@ -587,11 +587,18 @@ function measure(el: SysMLElement, depth: number, ctx: ViewContext): RelNode {
   const minPortH = headerH + Math.ceil(ports.length / 2) * (PORT_SIZE + 16) + PAD;
   h = Math.max(h, minPortH);
 
-  // manual resize (saved layout): boxes may be enlarged beyond their content,
-  // never shrunk below it
+  // manual resize (saved layout): the stored size acts as a MINIMUM — the
+  // box keeps it while the content fits and only grows on overflow, so
+  // moving children inside the box does not inflate it further
   const o = opts.offsets && opts.keyOf ? opts.offsets[opts.keyOf(el)] : undefined;
-  w += Math.max(0, o?.dw ?? 0);
-  h += Math.max(0, o?.dh ?? 0);
+  if (o?.mw !== undefined || o?.mh !== undefined) {
+    w = Math.max(w, o.mw ?? 0);
+    h = Math.max(h, o.mh ?? 0);
+  } else {
+    // legacy additive deltas
+    w += Math.max(0, o?.dw ?? 0);
+    h += Math.max(0, o?.dh ?? 0);
+  }
 
   return {
     el,
@@ -913,8 +920,13 @@ export interface LayoutOffsets {
   [elementKey: string]: {
     dx: number;
     dy: number;
+    /** legacy additive size enlargement (older sidecar files) */
     dw?: number;
     dh?: number;
+    /** manual minimum size (absolute): the box keeps this size and only
+     *  grows further when its content no longer fits */
+    mw?: number;
+    mh?: number;
     side?: PortSide;
     t?: number;
     /** manual edge routing waypoints (edge entries only) */

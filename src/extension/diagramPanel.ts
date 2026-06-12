@@ -51,8 +51,12 @@ interface DeleteMessage {
 type LayoutEntry = {
   dx: number;
   dy: number;
+  /** legacy additive enlargement */
   dw?: number;
   dh?: number;
+  /** manual minimum size (absolute) */
+  mw?: number;
+  mh?: number;
   /** manually placed port: border side + 0..1 position along it */
   side?: "left" | "right" | "top" | "bottom";
   t?: number;
@@ -241,19 +245,22 @@ export class DiagramPanel {
     for (const [k, v] of Object.entries(msg.offsets)) {
       const dw = Math.round(v.dw ?? 0);
       const dh = Math.round(v.dh ?? 0);
+      const hasMin = (v.mw ?? 0) > 0 || (v.mh ?? 0) > 0;
       const hasPort = v.side !== undefined && v.t !== undefined;
       const hasRoute = Array.isArray(v.wp) && v.wp.length > 0;
       const hasStyle = v.style === "ortho" || v.style === "curve";
       const hasAnchor = v.anchorA !== undefined || v.anchorB !== undefined;
       if (
         Math.abs(v.dx) > 0.5 || Math.abs(v.dy) > 0.5 || dw > 0.5 || dh > 0.5 ||
-        hasPort || hasRoute || hasStyle || hasAnchor
+        hasMin || hasPort || hasRoute || hasStyle || hasAnchor
       ) {
         cleaned[k] = {
           dx: Math.round(v.dx),
           dy: Math.round(v.dy),
           ...(dw > 0 ? { dw } : {}),
           ...(dh > 0 ? { dh } : {}),
+          ...(v.mw !== undefined ? { mw: Math.round(v.mw) } : {}),
+          ...(v.mh !== undefined ? { mh: Math.round(v.mh) } : {}),
           ...(hasPort ? { side: v.side, t: Math.round(v.t! * 1000) / 1000 } : {}),
           ...(hasRoute
             ? {
