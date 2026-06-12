@@ -40,6 +40,7 @@ package VehicleDefinitions {
     }
 
     part def Wheel {
+        port hub : ~DrivePort;
         attribute diameter : Real;
     }
 }

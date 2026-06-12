@@ -261,6 +261,19 @@ class Parser {
         case "exit":
         case "do":
           return this.parseStateAction(t.text, startTok, modifiers);
+        case "then": {
+          // target-only succession: `entry; then off;` (initial state) or a
+          // succession whose source is the preceding member. `then` followed
+          // by a control keyword (`then merge m;`) stays opaque
+          if (this.peek(1).type !== "identifier") return this.parseOpaqueStatement(startTok);
+          this.next();
+          const el = createElement("transition", startTok.start);
+          el.modifiers = [...modifiers, "then"];
+          this.takePendingDoc(el);
+          el.transition = { target: this.qnameRef(el, "end", false, true) };
+          this.parseBodyOrSemi(el);
+          return el;
+        }
         case "accept":
         case "send":
         case "assign":
@@ -273,7 +286,6 @@ class Parser {
         case "fork":
         case "join":
         case "return":
-        case "then":
         case "else":
         case "until":
         case "terminate":

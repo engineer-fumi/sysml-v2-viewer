@@ -16,7 +16,7 @@ package VehicleConfiguration {
 
         connect fuelTank.fuelOut to engine.fuelIn;
         connect engine.drive to transmission.driveIn;
-        connection driveShaft connect transmission.driveOut to rearWheels;
+        connection driveShaft connect transmission.driveOut to rearWheels.hub;
 
         flow of Fuel from fuelTank.fuelOut.fuel to engine.fuelIn.fuel;
     }

@@ -1,0 +1,200 @@
+{
+  "": {
+    "state-machine.sysml#CoffeeMachine": {
+      "dx": 189,
+      "dy": -898
+    },
+    "actions.sysml#OrderProcessing": {
+      "dx": -428,
+      "dy": -207
+    },
+    "actions.sysml#OrderProcessing::ProcessOrder::validate::checkedOrder": {
+      "dx": 7,
+      "dy": 55
+    },
+    "actions.sysml#OrderProcessing::ProcessOrder::ship": {
+      "dx": 115,
+      "dy": 74
+    },
+    "actions.sysml#OrderProcessing::ProcessOrder::manufacture": {
+      "dx": 14,
+      "dy": -145,
+      "dw": 5,
+      "dh": 119
+    }
+  },
+  "actions.sysml#OrderProcessing": {
+    "actions.sysml#OrderProcessing::ProcessOrder": {
+      "dx": -163,
+      "dy": 117
+    },
+    "actions.sysml#OrderProcessing::ProcessOrder::ship": {
+      "dx": 127,
+      "dy": 62
+    }
+  },
+  "actions.sysml#OrderProcessing::ProcessOrder": {
+    "actions.sysml#OrderProcessing::ProcessOrder::ship": {
+      "dx": 875,
+      "dy": -157
+    },
+    "actions.sysml#OrderProcessing::ProcessOrder::manufacture": {
+      "dx": 34,
+      "dy": 297
+    }
+  },
+  "state-machine.sysml#CoffeeMachine::BrewingBehavior": {
+    "state-machine.sysml#CoffeeMachine::BrewingBehavior::heating": {
+      "dx": -7,
+      "dy": -141
+    },
+    "state-machine.sysml#CoffeeMachine::BrewingBehavior::off": {
+      "dx": -50,
+      "dy": 1
+    },
+    "state-machine.sysml#CoffeeMachine::BrewingBehavior::initialize": {
+      "dx": -77,
+      "dy": 1
+    }
+  },
+  "bdd|": {
+    "vehicle-project/definitions.sysml#VehicleDefinitions": {
+      "dx": 97,
+      "dy": -3
+    },
+    "vehicle-project/definitions.sysml#VehicleDefinitions::FuelPort": {
+      "dx": 640,
+      "dy": -129
+    },
+    "vehicle-project/definitions.sysml#VehicleDefinitions::FuelTank": {
+      "dx": 322,
+      "dy": -128
+    },
+    "vehicle-project/definitions.sysml#VehicleDefinitions::Fuel": {
+      "dx": 478,
+      "dy": -45
+    },
+    "vehicle-project/definitions.sysml#VehicleDefinitions::Vehicle": {
+      "dx": 456,
+      "dy": 219
+    },
+    "vehicle-project/definitions.sysml#VehicleDefinitions::FuelLevel": {
+      "dx": 563,
+      "dy": 83
+    },
+    "vehicle-project/definitions.sysml#VehicleDefinitions::DrivePort": {
+      "dx": 96,
+      "dy": -28
+    },
+    "vehicle-project/definitions.sysml#VehicleDefinitions::Engine": {
+      "dx": -17,
+      "dy": -1
+    },
+    "vehicle-project/definitions.sysml#VehicleDefinitions::Transmission": {
+      "dx": -16,
+      "dy": -18
+    }
+  },
+  "req|": {
+    "vehicle-project/requirements.sysml#VehicleRequirements::MassLimit": {
+      "dx": -307,
+      "dy": 175
+    },
+    "vehicle-project/requirements.sysml#VehicleRequirements::vehicleMassRequirement": {
+      "dx": -286,
+      "dy": 172
+    },
+    "vehicle-project/configuration.sysml#VehicleConfiguration::vehicle": {
+      "dx": 201,
+      "dy": 305
+    }
+  },
+  "state|": {
+    "state-machine.sysml#CoffeeMachine::BrewingBehavior::off": {
+      "dx": -66,
+      "dy": -37
+    },
+    "state-machine.sysml#CoffeeMachine::BrewingBehavior::idle": {
+      "dx": 123,
+      "dy": -45
+    },
+    "state-machine.sysml#CoffeeMachine::BrewingBehavior::brewing": {
+      "dx": 122,
+      "dy": -3
+    }
+  },
+  "action|": {
+    "actions.sysml#OrderProcessing::ProcessOrder::ship": {
+      "dx": -171,
+      "dy": 127
+    }
+  },
+  "uc|": {
+    "use-cases.sysml#RobotUseCases::CalibrateRobot": {
+      "dx": 128,
+      "dy": -85
+    },
+    "use-cases.sysml#RobotUseCases::MaintainRobot": {
+      "dx": -272,
+      "dy": 2
+    },
+    "use-cases.sysml#RobotUseCases::operateRobot": {
+      "dx": -136,
+      "dy": 203
+    },
+    "use-cases.sysml#RobotUseCases::operator": {
+      "dx": -201,
+      "dy": 214
+    },
+    "use-cases.sysml#RobotUseCases::maintainRobot": {
+      "dx": -132,
+      "dy": 23
+    },
+    "use-cases.sysml#RobotUseCases::OperateRobot::operator": {
+      "dx": -933,
+      "dy": 253
+    },
+    "use-cases.sysml#RobotUseCases::OperateRobot": {
+      "dx": -109,
+      "dy": 118
+    },
+    "use-cases.sysml#RobotUseCases::MaintainRobot::operator": {
+      "dx": -587,
+      "dy": -115
+    }
+  },
+  "ibd|": {
+    "vehicle-project/configuration.sysml#VehicleConfiguration::vehicle::frontWheels": {
+      "dx": 148,
+      "dy": 136
+    },
+    "vehicle-project/configuration.sysml#VehicleConfiguration::vehicle::rearWheels": {
+      "dx": 667,
+      "dy": -182
+    },
+    "vehicle-project/configuration.sysml#VehicleConfiguration::vehicle::transmission": {
+      "dx": 380,
+      "dy": -99
+    },
+    "vehicle-project/configuration.sysml#VehicleConfiguration::vehicle::fuelTank": {
+      "dx": -279,
+      "dy": 7
+    },
+    "vehicle-project/configuration.sysml#VehicleConfiguration::vehicle::engine": {
+      "dx": 132,
+      "dy": 7
+    },
+    "vehicle-project/configuration.sysml#VehicleConfiguration::vehicle": {
+      "dx": 0,
+      "dy": 0,
+      "dw": 275,
+      "dh": 268
+    },
+    "vehicle-project/configuration.sysml#VehicleConfiguration::vehicle::fuelTank~port~fuelOut": {
+      "dx": 0,
+      "dy": 0,
+      "side": "right",
+      "t": 0.7
+    }
+  }
+}

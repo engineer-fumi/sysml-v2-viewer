@@ -18,12 +18,14 @@ package OrderProcessing {
         }
         action ship {
             in item product : Product;
+            out item shippedProduct : Product;
         }
 
         first validate then manufacture;
         first manufacture then ship;
 
         bind validate.order = order;
+        bind ship.shippedProduct = product;
         flow of Order from validate.checkedOrder to manufacture.order;
         flow of Product from manufacture.product to ship.product;
     }
