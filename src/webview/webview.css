@@ -46,6 +46,12 @@ body,
   max-width: 50%;
 }
 
+.kind-select {
+  color: #89b4fa;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
 .file-count {
   margin-left: auto;
   font-size: 11px;

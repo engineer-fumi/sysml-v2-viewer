@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { DIAGRAM_KINDS, DiagramKind } from "../core/layout";
 import { STDLIB_FILES } from "../core/stdlib";
 import { DiagramPanel } from "./diagramPanel";
 import {
@@ -33,6 +34,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand("sysml.openDiagram", () => {
       DiagramPanel.createOrShow(context, index);
+    }),
+    vscode.commands.registerCommand("sysml.openDiagramAs", async () => {
+      const picked = await vscode.window.showQuickPick(
+        DIAGRAM_KINDS.map((k) => ({
+          label: k.label,
+          description: k.description,
+          id: k.id as DiagramKind,
+        })),
+        { placeHolder: "開く図の種類を選択" }
+      );
+      if (picked) DiagramPanel.createOrShow(context, index, picked.id);
     })
   );
 }

@@ -86,5 +86,10 @@ exports.run = async function run() {
   await new Promise((r) => setTimeout(r, 1500));
   console.log("PASS: sysml.openDiagram executed");
 
+  // diagram-kind picker command is registered (not executed: it opens a QuickPick)
+  const commands = await vscode.commands.getCommands(true);
+  assert.ok(commands.includes("sysml.openDiagramAs"), "sysml.openDiagramAs registered");
+  console.log("PASS: sysml.openDiagramAs registered");
+
   console.log("ALL TESTS PASSED");
 };

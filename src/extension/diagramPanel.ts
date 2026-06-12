@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { SysMLElement, walk } from "../core/ast";
+import { DiagramKind, diagramKindLabel } from "../core/layout";
 import { SerializedModelFile, stripParents } from "../core/serialize";
 import { IndexedFile, ModelIndex } from "./modelIndex";
 
@@ -47,10 +48,27 @@ interface DeleteMessage {
   label: string;
 }
 
+type LayoutEntry = {
+  dx: number;
+  dy: number;
+  dw?: number;
+  dh?: number;
+  /** manually placed port: border side + 0..1 position along it */
+  side?: "left" | "right" | "top" | "bottom";
+  t?: number;
+  /** manual edge routing waypoints */
+  wp?: { x: number; y: number }[];
+};
+
 interface SaveLayoutMessage {
   type: "saveLayout";
   rootKey: string;
-  offsets: Record<string, { dx: number; dy: number }>;
+  offsets: Record<string, LayoutEntry>;
+}
+
+interface KindChangedMessage {
+  type: "kindChanged";
+  kind: DiagramKind;
 }
 
 type FromWebview =
@@ -60,29 +78,39 @@ type FromWebview =
   | RenameMessage
   | DeleteMessage
   | SaveLayoutMessage
+  | KindChangedMessage
   | { type: "ready" };
 
 const LAYOUT_FILE = ".sysml-layout.json";
 
-type Layouts = Record<string, Record<string, { dx: number; dy: number }>>;
+type Layouts = Record<string, Record<string, LayoutEntry>>;
 
 export class DiagramPanel {
-  static current: DiagramPanel | undefined;
+  /** open panels (one per diagram kind) */
+  private static panels = new Set<DiagramPanel>();
 
   private readonly panel: vscode.WebviewPanel;
   private disposables: vscode.Disposable[] = [];
   private postTimer: NodeJS.Timeout | undefined;
   /** suppress cursor-sync right after we changed the selection ourselves */
   private suppressCursorSync = 0;
+  /** the initial kind is sent to the webview only once */
+  private kindSent = false;
 
-  static createOrShow(context: vscode.ExtensionContext, index: ModelIndex): void {
-    if (DiagramPanel.current) {
-      DiagramPanel.current.panel.reveal(vscode.ViewColumn.Beside, true);
-      return;
+  static createOrShow(
+    context: vscode.ExtensionContext,
+    index: ModelIndex,
+    kind: DiagramKind = "general"
+  ): void {
+    for (const p of DiagramPanel.panels) {
+      if (p.kind === kind) {
+        p.panel.reveal(vscode.ViewColumn.Beside, true);
+        return;
+      }
     }
     const panel = vscode.window.createWebviewPanel(
       "sysmlDiagram",
-      "SysML ダイアグラム",
+      `SysML ${diagramKindLabel(kind)}`,
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
       {
         enableScripts: true,
@@ -90,13 +118,14 @@ export class DiagramPanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "dist")],
       }
     );
-    DiagramPanel.current = new DiagramPanel(panel, context, index);
+    DiagramPanel.panels.add(new DiagramPanel(panel, context, index, kind));
   }
 
   private constructor(
     panel: vscode.WebviewPanel,
     context: vscode.ExtensionContext,
-    private index: ModelIndex
+    private index: ModelIndex,
+    private kind: DiagramKind
   ) {
     this.panel = panel;
     panel.webview.html = this.html(context);
@@ -115,6 +144,10 @@ export class DiagramPanel {
               break;
             case "saveLayout":
               await this.saveLayout(msg);
+              break;
+            case "kindChanged":
+              this.kind = msg.kind;
+              this.panel.title = `SysML ${diagramKindLabel(msg.kind)}`;
               break;
             case "edit":
               await this.applyEdit(msg);
@@ -166,7 +199,11 @@ export class DiagramPanel {
       ast: stripParents(f.result.root),
     }));
     const layouts = await this.loadLayouts();
-    await this.panel.webview.postMessage({ type: "model", files, layouts });
+    // the kind accompanies only the first model so later pushes don't undo a
+    // kind switch made in the webview
+    const kind = this.kindSent ? undefined : this.kind;
+    this.kindSent = true;
+    await this.panel.webview.postMessage({ type: "model", files, layouts, kind });
   }
 
   // ---- layout sidecar ----------------------------------------------------
@@ -193,10 +230,23 @@ export class DiagramPanel {
     if (!uri) return;
     const layouts = await this.loadLayouts();
     // drop zero offsets to keep the file small
-    const cleaned: Record<string, { dx: number; dy: number }> = {};
+    const cleaned: Record<string, LayoutEntry> = {};
     for (const [k, v] of Object.entries(msg.offsets)) {
-      if (Math.abs(v.dx) > 0.5 || Math.abs(v.dy) > 0.5) {
-        cleaned[k] = { dx: Math.round(v.dx), dy: Math.round(v.dy) };
+      const dw = Math.round(v.dw ?? 0);
+      const dh = Math.round(v.dh ?? 0);
+      const hasPort = v.side !== undefined && v.t !== undefined;
+      const hasRoute = Array.isArray(v.wp) && v.wp.length > 0;
+      if (Math.abs(v.dx) > 0.5 || Math.abs(v.dy) > 0.5 || dw > 0.5 || dh > 0.5 || hasPort || hasRoute) {
+        cleaned[k] = {
+          dx: Math.round(v.dx),
+          dy: Math.round(v.dy),
+          ...(dw > 0 ? { dw } : {}),
+          ...(dh > 0 ? { dh } : {}),
+          ...(hasPort ? { side: v.side, t: Math.round(v.t! * 1000) / 1000 } : {}),
+          ...(hasRoute
+            ? { wp: v.wp!.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })) }
+            : {}),
+        };
       }
     }
     if (Object.keys(cleaned).length) layouts[msg.rootKey] = cleaned;
@@ -327,9 +377,11 @@ export class DiagramPanel {
     const file = this.index.getByFileId(msg.fileId);
     if (!file) return;
     const doc = await vscode.workspace.openTextDocument(file.uri);
+    // preserveFocus: keep the focus (and the editor-group layout) untouched;
+    // stealing focus on every diagram click can resize the editor groups
     const editor = await vscode.window.showTextDocument(doc, {
       viewColumn: vscode.ViewColumn.One,
-      preserveFocus: false,
+      preserveFocus: true,
     });
     const len = doc.getText().length;
     const range = new vscode.Range(
@@ -368,7 +420,7 @@ export class DiagramPanel {
   }
 
   private dispose(): void {
-    DiagramPanel.current = undefined;
+    DiagramPanel.panels.delete(this);
     clearTimeout(this.postTimer);
     for (const d of this.disposables) d.dispose();
     this.panel.dispose();

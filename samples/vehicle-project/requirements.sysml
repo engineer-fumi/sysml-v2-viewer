@@ -15,4 +15,6 @@ package VehicleRequirements {
     requirement vehicleMassRequirement : MassLimit {
         subject vehicle;
     }
+
+    satisfy vehicleMassRequirement by VehicleConfiguration::vehicle;
 }

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SysMLElement, createElement, qualifiedName, walk } from "../core/ast";
-import { LayoutOffsets } from "../core/layout";
+import { DIAGRAM_KINDS, DiagramKind, LayoutOffsets, PortSide } from "../core/layout";
 import { SerializedModelFile, restoreParents } from "../core/serialize";
 import { DiagramView, EditMode } from "./DiagramView";
 
@@ -18,6 +18,8 @@ interface ModelMessage {
   type: "model";
   files: SerializedModelFile[];
   layouts?: Layouts;
+  /** initial diagram kind (sent only with the first model message) */
+  kind?: DiagramKind;
 }
 
 interface HighlightMessage {
@@ -89,6 +91,8 @@ export function DiagramApp() {
   const [files, setFiles] = useState<SerializedModelFile[]>([]);
   const [layouts, setLayouts] = useState<Layouts>({});
   const [rootKey, setRootKey] = useState<string>("");
+  const [kind, setKind] = useState<DiagramKind>("general");
+  const kindInitialized = useRef(false);
   const [selected, setSelected] = useState<SysMLElement | undefined>(undefined);
   const [mode, setMode] = useState<EditMode>("select");
   const [connectSource, setConnectSource] = useState<SysMLElement | undefined>(undefined);
@@ -128,7 +132,10 @@ export function DiagramApp() {
     return combinedRoot;
   }, [combinedRoot, rootCandidates, rootKey, keyOf]);
 
-  const offsets = layouts[rootKey] ?? {};
+  // manual layouts are stored per (diagram kind, root); the general view keeps
+  // the plain rootKey for backward compatibility with existing sidecar files
+  const layoutKey = kind === "general" ? rootKey : `${kind}|${rootKey}`;
+  const offsets = layouts[layoutKey] ?? {};
 
   useEffect(() => {
     const onMessage = (e: MessageEvent<FromExtension>) => {
@@ -136,6 +143,10 @@ export function DiagramApp() {
       if (msg.type === "model") {
         setFiles(msg.files);
         if (msg.layouts) setLayouts(msg.layouts);
+        if (msg.kind && !kindInitialized.current) {
+          kindInitialized.current = true;
+          setKind(msg.kind);
+        }
       } else if (msg.type === "highlight") {
         setPendingHighlight({ fileId: msg.fileId, offset: msg.offset });
       }
@@ -293,14 +304,53 @@ export function DiagramApp() {
 
   const handleMoveBox = (key: string, ddx: number, ddy: number) => {
     const cur = offsets[key] ?? { dx: 0, dy: 0 };
-    const next = { ...offsets, [key]: { dx: cur.dx + ddx, dy: cur.dy + ddy } };
-    setLayouts((prev) => ({ ...prev, [rootKey]: next }));
-    vscode.postMessage({ type: "saveLayout", rootKey, offsets: next });
+    const next = { ...offsets, [key]: { ...cur, dx: cur.dx + ddx, dy: cur.dy + ddy } };
+    setLayouts((prev) => ({ ...prev, [layoutKey]: next }));
+    vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
+  };
+
+  const handleResizeBox = (key: string, ddw: number, ddh: number, fromTop: boolean) => {
+    const cur = offsets[key] ?? { dx: 0, dy: 0 };
+    const dw = Math.max(0, (cur.dw ?? 0) + ddw);
+    // resizing from the top grows the upper edge: the box shifts up by the
+    // height actually gained (height never shrinks below the content)
+    const dh = Math.max(0, (cur.dh ?? 0) + (fromTop ? -ddh : ddh));
+    const dy = fromTop ? cur.dy - (dh - (cur.dh ?? 0)) : cur.dy;
+    const next = { ...offsets, [key]: { ...cur, dy, dw, dh } };
+    setLayouts((prev) => ({ ...prev, [layoutKey]: next }));
+    vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
   };
 
   const resetLayout = () => {
-    setLayouts((prev) => ({ ...prev, [rootKey]: {} }));
-    vscode.postMessage({ type: "saveLayout", rootKey, offsets: {} });
+    setLayouts((prev) => ({ ...prev, [layoutKey]: {} }));
+    vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: {} });
+  };
+
+  const handleMovePort = (key: string, side: PortSide, t: number) => {
+    const next = { ...offsets, [key]: { dx: 0, dy: 0, side, t } };
+    setLayouts((prev) => ({ ...prev, [layoutKey]: next }));
+    vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
+  };
+
+  const handleRouteEdge = (key: string, points: { x: number; y: number }[]) => {
+    const next = { ...offsets };
+    if (points.length) {
+      next[key] = {
+        dx: 0,
+        dy: 0,
+        wp: points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })),
+      };
+    } else {
+      delete next[key];
+    }
+    setLayouts((prev) => ({ ...prev, [layoutKey]: next }));
+    vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
+  };
+
+  const changeKind = (k: DiagramKind) => {
+    kindInitialized.current = true;
+    setKind(k);
+    vscode.postMessage({ type: "kindChanged", kind: k });
   };
 
   const modeButton = (m: EditMode, label: string, title: string) => (
@@ -320,6 +370,18 @@ export function DiagramApp() {
     <div className="app">
       <div className="header">
         <span className="title">SysML ダイアグラム</span>
+        <select
+          className="root-select kind-select"
+          value={kind}
+          onChange={(e) => changeKind(e.target.value as DiagramKind)}
+          title="図の種類"
+        >
+          {DIAGRAM_KINDS.map((k) => (
+            <option key={k.id} value={k.id}>
+              {k.label}
+            </option>
+          ))}
+        </select>
         <select
           className="root-select"
           value={diagramRoot === combinedRoot ? "" : keyOf(diagramRoot)}
@@ -368,11 +430,12 @@ export function DiagramApp() {
               : "接続元をクリック"
             : mode.startsWith("add:")
               ? `${mode.slice(4)} の追加先をクリック — コンテナ or 空白 (図ルートへ) / Esc で取消`
-              : "ドラッグで配置変更 / ダブルクリックでリネーム / Delete で削除"}
+              : "ドラッグで配置変更 (port は辺に沿って / 線は中継点を追加) / 右下・右上ハンドルでサイズ変更 / ダブルクリックでリネーム (中継点は削除) / Delete で削除"}
         </span>
       </div>
       <DiagramView
         root={diagramRoot}
+        kind={kind}
         selected={selected}
         marked={connectSource}
         mode={mode}
@@ -381,6 +444,9 @@ export function DiagramApp() {
         onElementClick={handleElementClick}
         onElementDoubleClick={handleElementDoubleClick}
         onMoveBox={handleMoveBox}
+        onResizeBox={handleResizeBox}
+        onMovePort={handleMovePort}
+        onRouteEdge={handleRouteEdge}
         onBackgroundClick={handleBackgroundClick}
       />
     </div>
