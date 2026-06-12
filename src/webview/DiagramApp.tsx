@@ -380,15 +380,15 @@ export function DiagramApp() {
     vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
   };
 
-  const handleResizeBox = (key: string, mw: number, mh: number, dyShift: number) => {
+  const handleResizeBox = (key: string, ddw: number, ddh: number, fromTop: boolean) => {
     pushUndo();
     const cur = offsets[key] ?? { dx: 0, dy: 0 };
-    // absolute minimum size replaces the legacy additive deltas
-    const { dw: _dw, dh: _dh, ...rest } = cur;
-    const next = {
-      ...offsets,
-      [key]: { ...rest, dy: rest.dy + dyShift, mw: Math.round(mw), mh: Math.round(mh) },
-    };
+    const dw = Math.max(0, (cur.dw ?? 0) + ddw);
+    // resizing from the top grows the upper edge: the box shifts up by the
+    // height actually gained (height never shrinks below the content)
+    const dh = Math.max(0, (cur.dh ?? 0) + (fromTop ? -ddh : ddh));
+    const dy = fromTop ? cur.dy - (dh - (cur.dh ?? 0)) : cur.dy;
+    const next = { ...offsets, [key]: { ...cur, dy, dw, dh } };
     setLayouts((prev) => ({ ...prev, [layoutKey]: next }));
     vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
   };

@@ -71,9 +71,9 @@ interface Props {
   onElementDoubleClick: (el: SysMLElement) => void;
   /** commit a box move (delta in diagram coordinates) */
   onMoveBox: (key: string, ddx: number, ddy: number) => void;
-  /** commit a box resize to an absolute minimum size; dyShift moves the box
-   *  up when resizing from the top edge */
-  onResizeBox: (key: string, mw: number, mh: number, dyShift: number) => void;
+  /** commit a box resize (delta in diagram coordinates); fromTop grows the
+   *  upper edge (the box shifts up by the height gained) */
+  onResizeBox: (key: string, ddw: number, ddh: number, fromTop: boolean) => void;
   /** commit a port move to a border side at position t (0..1 along the side) */
   onMovePort: (key: string, side: PortSide, t: number) => void;
   /** commit manual edge routing (empty array clears the routing) */
@@ -601,14 +601,7 @@ export function DiagramView({
   const [view, setView] = useState({ tx: 20, ty: 20, scale: 1 });
   const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const boxDragRef = useRef<{ key: string; x: number; y: number } | null>(null);
-  const resizeRef = useRef<{
-    key: string;
-    x: number;
-    y: number;
-    fromTop: boolean;
-    startW: number;
-    startH: number;
-  } | null>(null);
+  const resizeRef = useRef<{ key: string; x: number; y: number; fromTop: boolean } | null>(null);
   const portDragRef = useRef<{
     key: string;
     box: { x: number; y: number; w: number; h: number };
@@ -646,9 +639,9 @@ export function DiagramView({
   const [liveDrag, setLiveDrag] = useState<{ key: string; dx: number; dy: number } | null>(null);
   const [liveResize, setLiveResize] = useState<{
     key: string;
-    mw: number;
-    mh: number;
-    dyShift: number;
+    dw: number;
+    dh: number;
+    fromTop: boolean;
   } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -675,14 +668,14 @@ export function DiagramView({
     }
     if (liveResize) {
       const cur = next[liveResize.key] ?? { dx: 0, dy: 0 };
-      next[liveResize.key] = {
-        ...cur,
-        dw: 0,
-        dh: 0,
-        mw: liveResize.mw,
-        mh: liveResize.mh,
-        dy: cur.dy + liveResize.dyShift,
-      };
+      const dw = Math.max(0, (cur.dw ?? 0) + liveResize.dw);
+      if (liveResize.fromTop) {
+        // dragging up grows the box; the top edge follows the cursor
+        const dh = Math.max(0, (cur.dh ?? 0) - liveResize.dh);
+        next[liveResize.key] = { ...cur, dy: cur.dy - (dh - (cur.dh ?? 0)), dw, dh };
+      } else {
+        next[liveResize.key] = { ...cur, dw, dh: Math.max(0, (cur.dh ?? 0) + liveResize.dh) };
+      }
     }
     return next;
   }, [offsets, liveDrag, liveResize]);
@@ -710,14 +703,7 @@ export function DiagramView({
   };
 
   const onResizeMouseDown = (node: DiagramNode, e: React.MouseEvent, fromTop: boolean) => {
-    resizeRef.current = {
-      key: keyOf(node.el),
-      x: e.clientX,
-      y: e.clientY,
-      fromTop,
-      startW: node.w,
-      startH: node.h,
-    };
+    resizeRef.current = { key: keyOf(node.el), x: e.clientX, y: e.clientY, fromTop };
   };
 
   const distToSegment = (
@@ -878,14 +864,11 @@ export function DiagramView({
     }
     const rs = resizeRef.current;
     if (rs) {
-      const ddw = (e.clientX - rs.x) / view.scale;
-      const ddh = (e.clientY - rs.y) / view.scale;
-      const growth = rs.fromTop ? -ddh : ddh;
       setLiveResize({
         key: rs.key,
-        mw: Math.max(40, rs.startW + ddw),
-        mh: Math.max(30, rs.startH + growth),
-        dyShift: rs.fromTop ? -growth : 0,
+        dw: (e.clientX - rs.x) / view.scale,
+        dh: (e.clientY - rs.y) / view.scale,
+        fromTop: rs.fromTop,
       });
       return;
     }
@@ -910,10 +893,9 @@ export function DiagramView({
         suppressClickRef.current = true; // the mouseup also fires a click
       }
     }
-    const rs = resizeRef.current;
-    if (rs && liveResize) {
-      if (Math.abs(liveResize.mw - rs.startW) > 1 || Math.abs(liveResize.mh - rs.startH) > 1) {
-        onResizeBox(liveResize.key, liveResize.mw, liveResize.mh, liveResize.dyShift);
+    if (resizeRef.current && liveResize) {
+      if (Math.abs(liveResize.dw) > 1 || Math.abs(liveResize.dh) > 1) {
+        onResizeBox(liveResize.key, liveResize.dw, liveResize.dh, liveResize.fromTop);
         suppressClickRef.current = true;
       }
     }

@@ -464,17 +464,25 @@ function arrangeChildren(
     }
 
     // manual offsets (saved diagram layout) – any child may be moved freely;
-    // the parent grows right/down to keep containing it. A child dragged past
-    // the top/left inner edge is clamped THERE (shifting all siblings to
-    // compensate made the whole content jump on drag)
+    // the parent grows to keep containing its children
     if (opts.offsets && opts.keyOf) {
+      let minX = 0;
+      let minY = 0;
       children.forEach((c, i) => {
         const o = opts.offsets![opts.keyOf!(c.el)];
         if (o) {
-          childPos[i].x = Math.max(0, childPos[i].x + o.dx);
-          childPos[i].y = Math.max(0, childPos[i].y + o.dy);
+          childPos[i].x += o.dx;
+          childPos[i].y += o.dy;
         }
+        minX = Math.min(minX, childPos[i].x);
+        minY = Math.min(minY, childPos[i].y);
       });
+      if (minX < 0 || minY < 0) {
+        for (const p of childPos) {
+          p.x -= minX;
+          p.y -= minY;
+        }
+      }
     }
     children.forEach((c, i) => {
       innerW = Math.max(innerW, childPos[i].x + c.size.w);
@@ -579,18 +587,11 @@ function measure(el: SysMLElement, depth: number, ctx: ViewContext): RelNode {
   const minPortH = headerH + Math.ceil(ports.length / 2) * (PORT_SIZE + 16) + PAD;
   h = Math.max(h, minPortH);
 
-  // manual resize (saved layout): the stored size acts as a MINIMUM — the
-  // box keeps it while the content fits and only grows on overflow, so
-  // moving children inside the box does not inflate it further
+  // manual resize (saved layout): boxes may be enlarged beyond their content,
+  // never shrunk below it
   const o = opts.offsets && opts.keyOf ? opts.offsets[opts.keyOf(el)] : undefined;
-  if (o?.mw !== undefined || o?.mh !== undefined) {
-    w = Math.max(w, o.mw ?? 0);
-    h = Math.max(h, o.mh ?? 0);
-  } else {
-    // legacy additive deltas
-    w += Math.max(0, o?.dw ?? 0);
-    h += Math.max(0, o?.dh ?? 0);
-  }
+  w += Math.max(0, o?.dw ?? 0);
+  h += Math.max(0, o?.dh ?? 0);
 
   return {
     el,
@@ -912,13 +913,8 @@ export interface LayoutOffsets {
   [elementKey: string]: {
     dx: number;
     dy: number;
-    /** legacy additive size enlargement (older sidecar files) */
     dw?: number;
     dh?: number;
-    /** manual minimum size (absolute): the box keeps this size and only
-     *  grows further when its content no longer fits */
-    mw?: number;
-    mh?: number;
     side?: PortSide;
     t?: number;
     /** manual edge routing waypoints (edge entries only) */
@@ -1094,17 +1090,18 @@ export function layoutDiagram(root: SysMLElement, options: LayoutOptions = {}): 
     if (n) n.kindLabel = "subject";
   }
 
-  // apply manual offsets to top-level boxes (saved diagram layout); each box
-  // is individually clamped to positive coordinates so dragging one box past
-  // the origin never shifts the others
+  // apply manual offsets to top-level boxes (saved diagram layout)
   const { offsets, keyOf } = options;
   if (offsets && keyOf) {
     for (const n of nodes) {
       const o = offsets[keyOf(n.el)];
       if (o) shiftNode(n, o.dx, o.dy);
-      const cx = Math.max(0, GAP - n.x);
-      const cy = Math.max(0, GAP - n.y);
-      if (cx || cy) shiftNode(n, cx, cy);
+    }
+    // normalize so everything stays in positive coordinates
+    const minX = Math.min(GAP, ...nodes.map((n) => n.x));
+    const minY = Math.min(GAP, ...nodes.map((n) => n.y));
+    if (minX < GAP || minY < GAP) {
+      for (const n of nodes) shiftNode(n, GAP - minX, GAP - minY);
     }
   }
 
