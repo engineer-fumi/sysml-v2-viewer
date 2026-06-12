@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SysMLElement, createElement, qualifiedName, walk } from "../core/ast";
-import { DIAGRAM_KINDS, DiagramKind, LayoutOffsets, PortSide } from "../core/layout";
+import { DIAGRAM_KINDS, DiagramKind, EdgeStyle, LayoutOffsets, PortSide } from "../core/layout";
 import { SerializedModelFile, restoreParents } from "../core/serialize";
 import { DiagramView, EditMode } from "./DiagramView";
 
@@ -333,15 +333,30 @@ export function DiagramApp() {
   };
 
   const handleRouteEdge = (key: string, points: { x: number; y: number }[]) => {
+    const cur = offsets[key];
     const next = { ...offsets };
     if (points.length) {
       next[key] = {
-        dx: 0,
-        dy: 0,
+        ...(cur ?? { dx: 0, dy: 0 }),
         wp: points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })),
       };
+    } else if (cur?.style && cur.style !== "straight") {
+      // keep the line-style override even when the waypoints are cleared
+      next[key] = { dx: 0, dy: 0, style: cur.style };
     } else {
       delete next[key];
+    }
+    setLayouts((prev) => ({ ...prev, [layoutKey]: next }));
+    vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
+  };
+
+  const handleEdgeStyle = (key: string, style: EdgeStyle) => {
+    const cur = offsets[key] ?? { dx: 0, dy: 0 };
+    const next = { ...offsets };
+    if (style === "straight" && !cur.wp?.length) {
+      delete next[key]; // straight without waypoints is the default
+    } else {
+      next[key] = { ...cur, style: style === "straight" ? undefined : style };
     }
     setLayouts((prev) => ({ ...prev, [layoutKey]: next }));
     vscode.postMessage({ type: "saveLayout", rootKey: layoutKey, offsets: next });
@@ -447,6 +462,7 @@ export function DiagramApp() {
         onResizeBox={handleResizeBox}
         onMovePort={handleMovePort}
         onRouteEdge={handleRouteEdge}
+        onEdgeStyle={handleEdgeStyle}
         onBackgroundClick={handleBackgroundClick}
       />
     </div>

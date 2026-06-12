@@ -58,6 +58,8 @@ type LayoutEntry = {
   t?: number;
   /** manual edge routing waypoints */
   wp?: { x: number; y: number }[];
+  /** line style override (straight / ortho / curve) */
+  style?: "straight" | "ortho" | "curve";
 };
 
 interface SaveLayoutMessage {
@@ -236,7 +238,11 @@ export class DiagramPanel {
       const dh = Math.round(v.dh ?? 0);
       const hasPort = v.side !== undefined && v.t !== undefined;
       const hasRoute = Array.isArray(v.wp) && v.wp.length > 0;
-      if (Math.abs(v.dx) > 0.5 || Math.abs(v.dy) > 0.5 || dw > 0.5 || dh > 0.5 || hasPort || hasRoute) {
+      const hasStyle = v.style === "ortho" || v.style === "curve";
+      if (
+        Math.abs(v.dx) > 0.5 || Math.abs(v.dy) > 0.5 || dw > 0.5 || dh > 0.5 ||
+        hasPort || hasRoute || hasStyle
+      ) {
         cleaned[k] = {
           dx: Math.round(v.dx),
           dy: Math.round(v.dy),
@@ -246,6 +252,7 @@ export class DiagramPanel {
           ...(hasRoute
             ? { wp: v.wp!.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })) }
             : {}),
+          ...(hasStyle ? { style: v.style } : {}),
         };
       }
     }

@@ -195,6 +195,10 @@ const VIEW_SPECS: Record<Exclude<DiagramKind, "seq">, ViewSpec> = {
 
 export type PortSide = "left" | "right" | "top" | "bottom";
 
+/** line rendering styles: straight (waypoints make it a polyline), right-angle
+ *  routing, or smoothed curve */
+export type EdgeStyle = "straight" | "ortho" | "curve";
+
 export interface DiagramPort {
   el: SysMLElement;
   name: string;
@@ -248,6 +252,8 @@ export interface DiagramEdge {
   y2: number;
   /** manual routing waypoints between the endpoints (saved layout) */
   points?: { x: number; y: number }[];
+  /** line rendering style (saved layout; default "straight") */
+  style?: EdgeStyle;
   /** stable key for saved manual routing */
   key?: string;
   /** endpoint boxes (set when both are available; enables manual routing) */
@@ -750,7 +756,9 @@ function applyEdgeRouting(edges: DiagramEdge[], options: LayoutOptions): void {
     const i = counters.get(base) ?? 0;
     counters.set(base, i + 1);
     e.key = `${base}~${i}`;
-    const wp = options.offsets?.[e.key]?.wp;
+    const entry = options.offsets?.[e.key];
+    if (entry?.style) e.style = entry.style;
+    const wp = entry?.wp;
     if (wp?.length && e.a && e.b) {
       e.points = wp.map((p) => ({ x: p.x, y: p.y }));
       // re-anchor the endpoints towards the first / last waypoint
@@ -817,6 +825,8 @@ export interface LayoutOffsets {
     t?: number;
     /** manual edge routing waypoints (edge entries only) */
     wp?: { x: number; y: number }[];
+    /** line style override (edge entries only) */
+    style?: EdgeStyle;
   };
 }
 

@@ -4,6 +4,7 @@ import {
   DiagramKind,
   DiagramNode,
   DiagramPort,
+  EdgeStyle,
   LayoutOffsets,
   PortSide,
   layoutDiagram,
@@ -60,6 +61,8 @@ interface Props {
   onMovePort: (key: string, side: PortSide, t: number) => void;
   /** commit manual edge routing (empty array clears the routing) */
   onRouteEdge: (key: string, points: { x: number; y: number }[]) => void;
+  /** change the line style of an edge */
+  onEdgeStyle: (key: string, style: EdgeStyle) => void;
   /** click on empty canvas (used by the add modes) */
   onBackgroundClick?: () => void;
 }
@@ -343,6 +346,37 @@ function NodeBox({ node, it }: { node: DiagramNode; it: Interaction }) {
   );
 }
 
+/** SVG path for the given style: straight polyline, right-angle, or curve */
+function pathFor(pts: { x: number; y: number }[], style: EdgeStyle): string {
+  if (pts.length < 2) return "";
+  if (style === "ortho") {
+    let d = `M ${pts[0].x} ${pts[0].y}`;
+    for (let i = 1; i < pts.length; i++) {
+      const prev = pts[i - 1];
+      const cur = pts[i];
+      d += ` L ${cur.x} ${prev.y} L ${cur.x} ${cur.y}`;
+    }
+    return d;
+  }
+  if (style === "curve") {
+    if (pts.length === 2) {
+      const [p0, p1] = pts;
+      const dx = (p1.x - p0.x) / 2;
+      return `M ${p0.x} ${p0.y} C ${p0.x + dx} ${p0.y}, ${p1.x - dx} ${p1.y}, ${p1.x} ${p1.y}`;
+    }
+    let d = `M ${pts[0].x} ${pts[0].y}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2;
+      const my = (pts[i].y + pts[i + 1].y) / 2;
+      d += ` Q ${pts[i].x} ${pts[i].y}, ${mx} ${my}`;
+    }
+    const last = pts[pts.length - 1];
+    d += ` L ${last.x} ${last.y}`;
+    return d;
+  }
+  return pts.map((p, i) => `${i ? "L" : "M"} ${p.x} ${p.y}`).join(" ");
+}
+
 function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
   const color = EDGE_COLOR[edge.kind] ?? "#74c7ec";
   const isSelected = it.selected === edge.el;
@@ -354,7 +388,7 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
   const midB = pts[Math.floor((pts.length - 1) / 2) + 1] ?? midA;
   const mx = (midA.x + midB.x) / 2;
   const my = (midA.y + midB.y) / 2;
-  const pointsAttr = pts.map((p) => `${p.x},${p.y}`).join(" ");
+  const d = pathFor(pts, edge.style ?? "straight");
   const routable = it.mode === "select" && !!edge.key && !!edge.a && !!edge.b;
   return (
     <g
@@ -364,8 +398,8 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
       }}
       style={{ cursor: routable ? "move" : "pointer" }}
     >
-      <polyline
-        points={pointsAttr}
+      <path
+        d={d}
         fill="none"
         stroke="transparent"
         strokeWidth={10}
@@ -376,8 +410,8 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
           }
         }}
       />
-      <polyline
-        points={pointsAttr}
+      <path
+        d={d}
         fill="none"
         stroke={isSelected ? "#f9e2af" : color}
         strokeWidth={isSelected ? 2.5 : 1.5}
@@ -445,6 +479,7 @@ export function DiagramView({
   onResizeBox,
   onMovePort,
   onRouteEdge,
+  onEdgeStyle,
   onBackgroundClick,
 }: Props) {
   const [view, setView] = useState({ tx: 20, ty: 20, scale: 1 });
@@ -749,6 +784,14 @@ export function DiagramView({
     liveEdge,
   };
 
+  // edges of the currently selected element (line-style controls)
+  const selectedEdges = layout.edges.filter((e) => e.el === selected && e.key);
+  const EDGE_STYLES: { value: EdgeStyle; label: string }[] = [
+    { value: "straight", label: "直線" },
+    { value: "ortho", label: "折れ線" },
+    { value: "curve", label: "曲線" },
+  ];
+
   return (
     <div className="diagram-view">
       <div className="diagram-toolbar">
@@ -756,6 +799,29 @@ export function DiagramView({
         <button onClick={() => setView({ tx: 20, ty: 20, scale: 1 })} title="リセット">100%</button>
         <button onClick={exportSvg} title="SVG として保存">⭳ SVG</button>
         <span className="diagram-zoom">{Math.round(view.scale * 100)}%</span>
+        {mode === "select" && selectedEdges.length > 0 && (
+          <>
+            <span className="diagram-zoom">線種:</span>
+            {EDGE_STYLES.map((s) => (
+              <button
+                key={s.value}
+                className={(selectedEdges[0].style ?? "straight") === s.value ? "active" : undefined}
+                onClick={() => selectedEdges.forEach((e) => onEdgeStyle(e.key!, s.value))}
+                title={`選択中の線を${s.label}で描画`}
+              >
+                {s.label}
+              </button>
+            ))}
+            {selectedEdges.some((e) => e.points?.length) && (
+              <button
+                onClick={() => selectedEdges.forEach((e) => onRouteEdge(e.key!, []))}
+                title="選択中の線の中継点をすべて削除"
+              >
+                ⟲ 経由点クリア
+              </button>
+            )}
+          </>
+        )}
       </div>
       <svg
         ref={svgRef}
