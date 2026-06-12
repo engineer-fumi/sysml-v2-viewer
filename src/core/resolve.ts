@@ -149,9 +149,10 @@ export class Resolver {
         const star = /::\*\*?$/.test(c.target) || c.target.endsWith("*");
         const base = c.target.replace(/(::)?\*\*?$/, "");
         if (!base) continue;
-        // import targets resolve from the parent scope upwards (not from the
-        // importing scope itself, to avoid self-recursion)
-        const target = this.resolve(scope.parent ?? this.root, base);
+        // import targets resolve from the importing scope itself so sibling /
+        // child packages work (`package P { import Defs::*; package Defs {} }`);
+        // the importStack guard prevents self-recursion through this scope
+        const target = this.resolve(scope, base);
         if (target) out.push({ star, target });
       }
     } finally {

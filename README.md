@@ -122,6 +122,7 @@ src/
     ├── DiagramApp.tsx   #   メッセージング・ルート選択
     └── DiagramView.tsx  #   SVG 描画 (パン/ズーム)
 samples/                 # サンプルモデル (複数ファイル構成の例を含む)
+samples/omg/             # OMG 公式サンプル (SysML-v2-Release より, EPL-2.0)
 test/                    # 拡張ホスト統合テスト (@vscode/test-electron)
 ```
 

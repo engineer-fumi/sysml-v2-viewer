@@ -310,6 +310,35 @@ export function registerDefinition(
     async provideDefinition(doc, position) {
       const word = wordAt(doc, position);
       if (!word) return undefined;
+      const offsetAtCursor = doc.offsetAt(position);
+
+      // scope-aware resolution first: the same name may be declared in
+      // several packages, so resolve from the element under the cursor
+      const entry = index.get(doc.uri) ?? index.indexDocument(doc);
+      const scope = elementAt(entry.result.root, offsetAtCursor);
+      if (scope) {
+        const resolver = new Resolver(index.combinedRoot(true));
+        const resolved = resolver.resolve(scope, word);
+        if (resolved?.fileId !== undefined && resolved.nameStart !== undefined) {
+          const file = index.getByFileId(resolved.fileId);
+          const onOwnDecl =
+            file?.uri.toString() === doc.uri.toString() &&
+            resolved.nameStart <= offsetAtCursor &&
+            offsetAtCursor <= (resolved.nameEnd ?? resolved.nameStart);
+          if (file && !onOwnDecl) {
+            const target = await vscode.workspace.openTextDocument(file.uri);
+            return new vscode.Location(
+              file.uri,
+              new vscode.Range(
+                target.positionAt(resolved.nameStart),
+                target.positionAt(resolved.nameEnd ?? resolved.nameStart + 1)
+              )
+            );
+          }
+        }
+      }
+
+      // fallback: all declarations with that name across the workspace
       const decls = index.findDeclarations(word);
       const locations: vscode.Location[] = [];
       for (const { file, el } of decls) {

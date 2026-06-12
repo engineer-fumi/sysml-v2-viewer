@@ -168,6 +168,12 @@ class Parser {
         }
         continue;
       }
+      // metadata prefix: `#derivation connection def ...` / `end #original r1`
+      if (t.type === "punct" && t.text === "#") {
+        this.next();
+        if (this.atIdentifier()) modifiers.push("#" + this.parseQualifiedName(false, false));
+        continue;
+      }
       if (t.type !== "keyword") break;
       if (t.text === "in" || t.text === "out" || t.text === "inout") {
         // direction only applies when followed by a declaration keyword/name,
@@ -245,6 +251,11 @@ class Parser {
         case "transition":
         case "succession":
         case "first":
+          // `succession flow x from a to b;` is an item flow with ordering
+          if (t.text === "succession" && this.peek(1).text === "flow") {
+            this.next();
+            return this.parseFlow(startTok, [...modifiers, "succession"]);
+          }
           return this.parseTransition(startTok, modifiers);
         case "entry":
         case "exit":
@@ -312,15 +323,21 @@ class Parser {
       }
     }
 
-    // ---- feature without keyword: `x : T;` (e.g. enum literal or value) --
+    // ---- feature without keyword: `x : T;` (enum literal, value, or an
+    // action parameter like `out xrsl : Exposure`) — kind "ref" so the
+    // attribute typing rules don't apply to implicit features
     if (this.atIdentifier() || this.at("<")) {
-      return this.parseDeclaration(
-        direction ? "attribute" : "ref",
-        modifiers,
-        direction,
-        startTok,
-        /*implicitKind*/ true
-      );
+      return this.parseDeclaration("ref", modifiers, direction, startTok, /*implicitKind*/ true);
+    }
+
+    // ---- anonymous feature starting with a relationship token:
+    // `redefines mass = 1000 [kg];` / `ref :>> system;` / `:> base;`
+    if (
+      t.text === ":>>" || t.text === "redefines" ||
+      t.text === ":>" || t.text === "specializes" || t.text === "subsets" ||
+      t.text === "::>" || t.text === "references"
+    ) {
+      return this.parseDeclaration("ref", modifiers, direction, startTok, /*implicitKind*/ true);
     }
 
     this.error(`予期しないトークン '${t.text}'`, t.start, t.end);
@@ -411,18 +428,30 @@ class Parser {
     const ends: ConnectionEnd[] = [];
     if (this.eat("(")) {
       do {
-        ends.push({ path: this.qnameRef(el, "end", false, true) });
+        ends.push({ path: this.parseConnectEnd(el) });
       } while (this.eat(","));
       this.expect(")", "connect");
     } else {
-      ends.push({ path: this.qnameRef(el, "end", false, true) });
+      ends.push({ path: this.parseConnectEnd(el) });
       if (this.expect("to", "connect")) {
-        ends.push({ path: this.qnameRef(el, "end", false, true) });
+        ends.push({ path: this.parseConnectEnd(el) });
       }
     }
     el.ends = ends;
     this.parseBodyOrSemi(el);
     return el;
+  }
+
+  /** connection end: `path` or a named end `endName ::> path` */
+  private parseConnectEnd(el: SysMLElement): string {
+    if (
+      this.atIdentifier() &&
+      (this.peek(1).text === "::>" || this.peek(1).text === "references")
+    ) {
+      this.next(); // end name (a declaration, not a reference to resolve)
+      this.next(); // ::> | references
+    }
+    return this.qnameRef(el, "end", false, true);
   }
 
   private parseBind(startTok: Token, modifiers: string[]): SysMLElement {
@@ -521,8 +550,27 @@ class Parser {
       el.typedBy.push(this.qnameRef(el, "type", false, true));
       while (this.eat(",")) el.typedBy.push(this.qnameRef(el, "type", false, true));
     }
-    // without typing, the name references an existing element
-    if (!typed && kw !== "event" && el.target) {
+    // optional multiplicity / specializations:
+    // `perform action takePicture[*] :> PictureTaking::takePicture;`
+    for (;;) {
+      if (this.at("[")) {
+        el.multiplicity = this.parseMultiplicity();
+        continue;
+      }
+      if (this.eat(":>") || this.eat("specializes") || this.eat("subsets") || this.eat("::>")) {
+        el.specializes.push(this.qnameRef(el, "specialize", false, true));
+        while (this.eat(",")) el.specializes.push(this.qnameRef(el, "specialize", false, true));
+        continue;
+      }
+      if (this.eat(":>>") || this.eat("redefines")) {
+        el.redefines.push(this.qnameRef(el, "redefine", false, true));
+        while (this.eat(",")) el.redefines.push(this.qnameRef(el, "redefine", false, true));
+        continue;
+      }
+      break;
+    }
+    // without typing / specialization, the name references an existing element
+    if (!typed && !el.specializes.length && !el.redefines.length && kw !== "event" && el.target) {
       el.refs.push({ kind: "target", name: el.target, start: t2.start, end: targetEnd });
     }
     // optional `by` clause for satisfy
@@ -548,6 +596,11 @@ class Parser {
         el.nameStart = t.start;
         el.nameEnd = t.end;
       }
+    }
+    // optional typing: `succession : HappensJustBefore first a then b;`
+    if (this.eat(":")) {
+      el.typedBy.push(this.qnameRef(el, "type", false, true));
+      while (this.eat(",")) el.typedBy.push(this.qnameRef(el, "type", false, true));
     }
     if (kw.text === "first" || this.eat("first")) {
       el.transition.source = this.qnameRef(el, "end", false, true);
@@ -648,12 +701,6 @@ class Parser {
     this.takePendingDoc(el);
     this.parseIdentification(el);
 
-    // `connection c connect a to b` support
-    if ((kind === "connection" || kind === "interface" || kind === "allocation") && this.at("connect")) {
-      this.next();
-      return this.parseConnectBody(kind, { start: el.start } as Token, el.modifiers, el);
-    }
-
     // relationships
     for (;;) {
       if (this.eat(":") || this.eat("defined")) {
@@ -686,6 +733,12 @@ class Parser {
         continue;
       }
       break;
+    }
+
+    // `connection c : Type connect a to b` (after name / typing / multiplicity)
+    if ((kind === "connection" || kind === "interface" || kind === "allocation") && this.at("connect")) {
+      this.next();
+      return this.parseConnectBody(kind, { start: el.start } as Token, el.modifiers, el);
     }
 
     // value part

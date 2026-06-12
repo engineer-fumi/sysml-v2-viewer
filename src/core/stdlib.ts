@@ -144,6 +144,59 @@ library package ISQ {
     attribute def AngleValue :> Quantities::ScalarQuantityValue;
     attribute def AmountOfSubstanceValue :> Quantities::ScalarQuantityValue;
     attribute def LuminousIntensityValue :> Quantities::ScalarQuantityValue;
+
+    // common quantity attribute usages (e.g. \`:> ISQ::mass\`)
+    attribute mass : MassValue;
+    attribute length : LengthValue;
+    attribute time : TimeValue;
+    attribute duration : DurationValue;
+    attribute speed : SpeedValue;
+    attribute velocity : VelocityValue;
+    attribute acceleration : AccelerationValue;
+    attribute force : ForceValue;
+    attribute torque : TorqueValue;
+    attribute pressure : PressureValue;
+    attribute energy : EnergyValue;
+    attribute power : PowerValue;
+    attribute temperature : TemperatureValue;
+    attribute frequency : FrequencyValue;
+    attribute area : AreaValue;
+    attribute volume : VolumeValue;
+    attribute angle : AngleValue;
+}
+
+library package Time {
+    attribute def DateTime;
+    attribute def TimeInstantValue;
+    attribute def TimeIntervalValue;
+}
+
+library package MeasurementReferences {
+    attribute def TensorMeasurementReference;
+    attribute def VectorMeasurementReference :> TensorMeasurementReference;
+    attribute def ScalarMeasurementReference :> VectorMeasurementReference;
+    alias MeasurementReference for TensorMeasurementReference;
+    attribute def CoordinateFrame :> VectorMeasurementReference;
+}
+
+library package BaseFunctions {
+    // expression bodies are treated as opaque text; the packages exist so
+    // imports resolve
+}
+
+library package NumericalFunctions {
+}
+
+library package ScalarFunctions {
+}
+
+library package RealFunctions {
+}
+
+library package RequirementDerivation {
+    metadata def derivation;
+    metadata def original;
+    metadata def derive;
 }
 
 library package SI {
