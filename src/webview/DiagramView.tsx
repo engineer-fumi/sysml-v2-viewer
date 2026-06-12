@@ -374,15 +374,64 @@ function NodeBox({ node, it }: { node: DiagramNode; it: Interaction }) {
   );
 }
 
+type Axis = "h" | "v";
+
+/** axis perpendicular to the box border the anchor point sits on */
+function sideAxis(box: DiagramNode, p: { x: number; y: number }): Axis {
+  const eps = 1.5;
+  if (Math.abs(p.x - box.x) < eps || Math.abs(p.x - (box.x + box.w)) < eps) return "h";
+  if (Math.abs(p.y - box.y) < eps || Math.abs(p.y - (box.y + box.h)) < eps) return "v";
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  return Math.abs(p.x - cx) * box.h > Math.abs(p.y - cy) * box.w ? "h" : "v";
+}
+
+/** one right-angle segment: leaves `prev` along `leave`, optionally arrives
+ *  at `cur` along `arrive` (so arrows hit box borders perpendicular) */
+function orthoSegment(
+  prev: { x: number; y: number },
+  cur: { x: number; y: number },
+  leave: Axis,
+  arrive?: Axis
+): string {
+  if (Math.abs(prev.x - cur.x) < 0.5 || Math.abs(prev.y - cur.y) < 0.5) {
+    return ` L ${cur.x} ${cur.y}`;
+  }
+  if (arrive === "h") {
+    if (leave === "h") {
+      const mx = (prev.x + cur.x) / 2;
+      return ` L ${mx} ${prev.y} L ${mx} ${cur.y} L ${cur.x} ${cur.y}`;
+    }
+    return ` L ${prev.x} ${cur.y} L ${cur.x} ${cur.y}`;
+  }
+  if (arrive === "v") {
+    if (leave === "v") {
+      const my = (prev.y + cur.y) / 2;
+      return ` L ${prev.x} ${my} L ${cur.x} ${my} L ${cur.x} ${cur.y}`;
+    }
+    return ` L ${cur.x} ${prev.y} L ${cur.x} ${cur.y}`;
+  }
+  return leave === "v"
+    ? ` L ${prev.x} ${cur.y} L ${cur.x} ${cur.y}`
+    : ` L ${cur.x} ${prev.y} L ${cur.x} ${cur.y}`;
+}
+
 /** SVG path for the given style: straight polyline, right-angle, or curve */
-function pathFor(pts: { x: number; y: number }[], style: EdgeStyle): string {
+function pathFor(
+  pts: { x: number; y: number }[],
+  style: EdgeStyle,
+  startAxis?: Axis,
+  endAxis?: Axis
+): string {
   if (pts.length < 2) return "";
   if (style === "ortho") {
     let d = `M ${pts[0].x} ${pts[0].y}`;
     for (let i = 1; i < pts.length; i++) {
       const prev = pts[i - 1];
       const cur = pts[i];
-      d += ` L ${cur.x} ${prev.y} L ${cur.x} ${cur.y}`;
+      const leave = i === 1 ? startAxis ?? "h" : "h";
+      const arrive = i === pts.length - 1 ? endAxis : undefined;
+      d += orthoSegment(prev, cur, leave, arrive);
     }
     return d;
   }
@@ -416,10 +465,10 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
   const midB = pts[Math.floor((pts.length - 1) / 2) + 1] ?? midA;
   const mx = (midA.x + midB.x) / 2;
   const my = (midA.y + midB.y) / 2;
-  const d = pathFor(pts, edge.style ?? "straight");
+  const startAxis = edge.a ? sideAxis(edge.a, pts[0]) : undefined;
+  const endAxis = edge.b ? sideAxis(edge.b, pts[pts.length - 1]) : undefined;
+  const d = pathFor(pts, edge.style ?? "straight", startAxis, endAxis);
   const routable = it.mode === "select" && !!edge.key && !!edge.a && !!edge.b;
-  // dragging only does something when the line has waypoints to move
-  const draggableLine = routable && waypoints.length > 0;
   return (
     <g
       onClick={(e) => {
@@ -427,7 +476,7 @@ function EdgeLine({ edge, it }: { edge: DiagramEdge; it: Interaction }) {
         it.onClick(edge.el);
       }}
       onContextMenu={(e) => it.onEdgeContextMenu(edge, e)}
-      style={{ cursor: draggableLine ? "move" : "pointer" }}
+      style={{ cursor: routable ? "move" : "pointer" }}
     >
       <path
         d={d}
@@ -690,7 +739,10 @@ export function DiagramView({
       } else if (points.length) {
         dragIndex = -1; // move all waypoints together
       } else {
-        return; // straight line: nothing to drag, click selects
+        // straight line: dragging creates the FIRST bend (further waypoints
+        // are added via the context menu only, so they cannot pile up)
+        points.push(m);
+        dragIndex = 0;
       }
     }
     edgeDragRef.current = {
